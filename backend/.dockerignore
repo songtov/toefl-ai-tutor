@@ -1,0 +1,11 @@
+.env
+.env.*
+.venv
+.chatgpt-auth
+*.db
+*.db-*
+**/__pycache__
+.pytest_cache
+.ruff_cache
+tests
+evals

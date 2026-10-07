@@ -1,10 +1,24 @@
 services:
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        API_URL: ${API_URL:-http://host.docker.internal:8000}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      # Override any local paths in .env so data stays in the volume.
+      DATABASE_URL: sqlite:////data/tutor.db
+      CHATGPT_AUTH_DIR: /data/auth
+      FRONTEND_URL: http://127.0.0.1:${FRONTEND_PORT:-3000}
+    volumes:
+      - tutor-data:/data
+    # Loopback only: the API has no user accounts, and this port receives the OAuth callback.
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "127.0.0.1:1455:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  tutor-data:

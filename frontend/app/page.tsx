@@ -3,11 +3,18 @@
 import { type ReactNode, useEffect, useState } from "react";
 import {
   type Answer,
+  type AuthStatus,
+  MANAGE_USAGE_URL,
   type SessionDetail,
   type SessionSummary,
   type TaskDetail,
+  USAGE_LIMIT_MESSAGE,
+  describeError,
+  getAuthStatus,
   getSession,
   listSessions,
+  login,
+  logout,
   startSession,
   submitAnswer,
 } from "@/lib/api";
@@ -22,6 +29,8 @@ const CRITERION_LABELS: Record<string, string> = {
 const BAR_BUTTON =
   "rounded border border-white/70 px-4 py-1.5 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent";
 
+const AUTHORIZE_ORIGIN = "https://auth.openai.com";
+
 const countWords = (text: string) => (text.trim() ? text.trim().split(/\s+/).length : 0);
 
 const parseUtc = (iso: string) => new Date(/Z|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
@@ -33,6 +42,7 @@ export default function Home() {
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
 
   async function run(label: string, action: () => Promise<void>) {
     setBusy(label);
@@ -48,7 +58,39 @@ export default function Home() {
 
   useEffect(() => {
     listSessions().then(setSessions, (e) => setError(String(e)));
+    const result = new URLSearchParams(window.location.search).get("auth");
+    if (result) window.history.replaceState(null, "", window.location.pathname);
+    getAuthStatus().then(
+      (status) => {
+        setAuth(status);
+        if (result && result !== "ok") setError(`Sign-in failed: ${describeError(result)}`);
+      },
+      (e) => setError(String(e)),
+    );
   }, []);
+
+  const onLogin = () =>
+    run("Opening ChatGPT sign-in…", async () => {
+      const { authorize_url } = await login();
+      if (new URL(authorize_url).origin !== AUTHORIZE_ORIGIN) throw new Error("Unexpected sign-in URL");
+      window.location.assign(authorize_url);
+    });
+
+  const onLogout = () =>
+    run("Signing out…", async () => {
+      const { revoked } = await logout();
+      setAuth(await getAuthStatus());
+      if (!revoked) {
+        throw new Error(
+          "Signed out locally, but OpenAI did not confirm revocation. You can disconnect this app in ChatGPT Settings.",
+        );
+      }
+    });
+
+  const ready = auth?.signed_in === true && auth.plan_enabled;
+  const account = (
+    <AccountMenu auth={auth} onLogin={onLogin} onLogout={onLogout} disabled={busy !== null} />
+  );
 
   const openSet = (id: number) =>
     run("Loading…", async () => {
@@ -86,9 +128,17 @@ export default function Home() {
       <Shell
         title="Writing Practice"
         actions={
-          <button onClick={onNewSet} disabled={busy !== null} className={BAR_BUTTON}>
-            New Set
-          </button>
+          <>
+            {account}
+            <button
+              onClick={onNewSet}
+              disabled={busy !== null || !ready}
+              title={ready ? undefined : "Sign in with ChatGPT first"}
+              className={BAR_BUTTON}
+            >
+              New Set
+            </button>
+          </>
         }
         subLeft="Writing | Sets"
         subRight={`${sessions.length} set(s)`}
@@ -110,6 +160,7 @@ export default function Home() {
       title={`Set ${detail.id}`}
       actions={
         <>
+          {account}
           <button onClick={onExit} disabled={busy !== null} className={BAR_BUTTON}>
             Exit
           </button>
@@ -119,8 +170,14 @@ export default function Home() {
           {last && pending.length > 0 ? (
             <button
               onClick={onSubmitSet}
-              disabled={busy !== null || !allDrafted}
-              title={allDrafted ? undefined : "Answer every question before submitting"}
+              disabled={busy !== null || !allDrafted || !ready}
+              title={
+                !ready
+                  ? "Sign in with ChatGPT first"
+                  : allDrafted
+                    ? undefined
+                    : "Answer every question before submitting"
+              }
               className={`${BAR_BUTTON} border-transparent bg-exam-accent hover:bg-exam-accent/80`}
             >
               Submit Set
@@ -211,9 +268,55 @@ function Shell({
       {error && (
         <p role="alert" className="border-b border-red-300 bg-red-50 px-6 py-2 text-sm text-red-800">
           {error}
+          {error === USAGE_LIMIT_MESSAGE && (
+            <>
+              {" "}
+              <ManageUsageLink className="font-semibold underline" />
+            </>
+          )}
         </p>
       )}
       <main className="flex flex-1 flex-col">{children}</main>
+    </div>
+  );
+}
+
+function ManageUsageLink({ className }: { className: string }) {
+  return (
+    <a href={MANAGE_USAGE_URL} target="_blank" rel="noopener noreferrer" className={className}>
+      Manage usage
+    </a>
+  );
+}
+
+function AccountMenu({
+  auth,
+  onLogin,
+  onLogout,
+  disabled,
+}: {
+  auth: AuthStatus | null;
+  onLogin: () => void;
+  onLogout: () => void;
+  disabled: boolean;
+}) {
+  if (auth === null) return null;
+  if (!auth.signed_in || !auth.plan_enabled) {
+    return (
+      <button onClick={onLogin} disabled={disabled} className={BAR_BUTTON}>
+        Continue with ChatGPT
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-3 text-xs text-white/80">
+      <span>
+        Using ChatGPT plan · {auth.email} ·{" "}
+        <ManageUsageLink className="underline hover:text-white" />
+      </span>
+      <button onClick={onLogout} disabled={disabled} className={BAR_BUTTON}>
+        Sign out
+      </button>
     </div>
   );
 }
