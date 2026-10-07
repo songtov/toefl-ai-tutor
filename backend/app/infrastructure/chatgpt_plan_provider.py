@@ -44,6 +44,7 @@ class ChatGPTPlanProvider:
             http_client=self._http_client,
         )
         start = time.perf_counter()
+        text = None
         try:
             with client.responses.stream(
                 model=s.chatgpt_model,
@@ -53,7 +54,11 @@ class ChatGPTPlanProvider:
                 store=False,
             ) as stream:
                 for event in stream:
-                    if event.type in ("response.failed", "response.incomplete"):
+                    # With store=false, response.completed carries no output items, so the
+                    # text is only available from the streamed events.
+                    if event.type == "response.output_text.done":
+                        text = event.text
+                    elif event.type in ("response.failed", "response.incomplete"):
                         error = event.response.error
                         raise PlanRequestError(
                             429 if error and error.code == USAGE_LIMIT_CODE else 502,
@@ -67,13 +72,13 @@ class ChatGPTPlanProvider:
         except APIConnectionError as e:
             raise PlanRequestError(502, "responses_unreachable") from e
         latency_ms = int((time.perf_counter() - start) * 1000)
-        if response.output_parsed is None:
-            raise RuntimeError(f"model returned no parsable output for {schema.__name__}")
+        if text is None:
+            raise RuntimeError(f"model returned no output for {schema.__name__}")
         usage = response.usage
         input_tokens = usage.input_tokens if usage else 0
         output_tokens = usage.output_tokens if usage else 0
         return LLMResult(
-            parsed=response.output_parsed,
+            parsed=schema.model_validate_json(text),
             model=response.model,
             usage=Usage(input_tokens, output_tokens, 0.0),
             latency_ms=latency_ms,

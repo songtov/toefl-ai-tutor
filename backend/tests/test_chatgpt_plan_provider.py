@@ -68,12 +68,22 @@ def _provider(handler) -> tuple[ChatGPTPlanProvider, list[httpx.Request]]:
 
 
 def test_streams_structured_output_without_storing():
+    text = json.dumps(CANNED[Score])
+    message = {"type": "message", "id": "msg_1", "role": "assistant", "status": "in_progress"}
+    part = {"type": "output_text", "text": "", "annotations": []}
+    where = {"item_id": "msg_1", "output_index": 0, "content_index": 0}
+    # Mirrors the ChatGPT plan stream: text arrives in deltas; response.completed has no output.
     body = _sse(
         {"type": "response.created", "response": _response("in_progress")},
         {
-            "type": "response.completed",
-            "response": _response("completed", json.dumps(CANNED[Score])),
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {**message, "content": []},
         },
+        {"type": "response.content_part.added", **where, "part": part},
+        {"type": "response.output_text.delta", **where, "delta": text, "logprobs": []},
+        {"type": "response.output_text.done", **where, "text": text, "logprobs": []},
+        {"type": "response.completed", "response": _response("completed")},
     )
     provider, seen = _provider(
         lambda r: httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
