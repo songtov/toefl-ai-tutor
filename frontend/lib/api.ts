@@ -42,6 +42,22 @@ export type SessionDetail = {
   tasks: TaskDetail[];
 };
 
+export type AuthStatus = { signed_in: boolean; email: string | null; plan_enabled: boolean };
+
+export const MANAGE_USAGE_URL = "https://chatgpt.com/settings/usage";
+
+export const USAGE_LIMIT_MESSAGE =
+  "Usage limit reached. Review your plan or this app's limit in ChatGPT settings.";
+
+const ERROR_MESSAGES: Record<string, string> = {
+  sign_in_required: "Sign in with ChatGPT to continue.",
+  plan_not_enabled: "ChatGPT plan usage is not enabled for this sign-in. Sign in again and allow it.",
+  subscription_sharing_usage_limit_exceeded: USAGE_LIMIT_MESSAGE,
+  access_denied: "Sign-in was cancelled.",
+};
+
+export const describeError = (code: string) => ERROR_MESSAGES[code] ?? code;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -49,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(describeError(body?.detail ?? `${res.status} ${res.statusText}`));
   }
   return res.json();
 }
@@ -65,3 +81,9 @@ export const submitAnswer = (taskId: number, text: string) =>
     method: "POST",
     body: JSON.stringify({ text }),
   });
+
+export const getAuthStatus = () => request<AuthStatus>("/auth/status");
+
+export const login = () => request<{ authorize_url: string }>("/auth/login", { method: "POST" });
+
+export const logout = () => request<{ revoked: boolean }>("/auth/logout", { method: "POST" });
