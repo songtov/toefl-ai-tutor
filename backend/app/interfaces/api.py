@@ -19,9 +19,10 @@ from app.application.llm import LLMProvider, LLMResult
 from app.config import Settings, get_settings
 from app.domain.assessment import Corrections, CriterionRationale, Score, SentenceCorrection
 from app.domain.task import EmailTask
-from app.infrastructure.codex_cli_provider import CodexCLIProvider
+from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
 from app.infrastructure.db import DEFAULT_USER_ID, Response, Result, StudySession, Task
 from app.infrastructure.openai_provider import OpenAIAPIProvider
+from app.interfaces.auth_api import Auth
 
 router = APIRouter()
 
@@ -31,10 +32,10 @@ def get_db(request: Request) -> Iterator[Session]:
         yield db
 
 
-def get_provider(settings: Annotated[Settings, Depends(get_settings)]) -> LLMProvider:
+def get_provider(settings: Annotated[Settings, Depends(get_settings)], auth: Auth) -> LLMProvider:
     try:
-        if settings.llm_provider == "codex_cli":
-            return CodexCLIProvider(settings)
+        if settings.llm_provider == "chatgpt_plan":
+            return ChatGPTPlanProvider(settings, auth)
         return OpenAIAPIProvider(settings)
     except RuntimeError as e:
         raise HTTPException(503, str(e)) from e
