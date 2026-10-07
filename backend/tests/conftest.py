@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 from app.application.llm import LLMResult, Usage
 from app.domain.assessment import Corrections, Score
 from app.domain.task import EmailTask
+from app.infrastructure.chatgpt_auth import ChatGPTAuth, CredentialStore
 from app.interfaces.api import get_provider
 from app.main import create_app
 
@@ -64,8 +66,21 @@ def provider() -> FakeProvider:
 
 
 @pytest.fixture
-def client(provider: FakeProvider, tmp_path) -> Iterator[TestClient]:
-    app = create_app(f"sqlite:///{tmp_path / 'test.db'}")
+def auth(tmp_path) -> ChatGPTAuth:
+    return ChatGPTAuth(
+        CredentialStore(tmp_path / "auth"),
+        redirect_uri="http://127.0.0.1:1455/auth/callback",
+        agent_name="toefl-ai-tutor",
+        http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))),
+        signing_key=lambda token: None,
+    )
+
+
+@pytest.fixture
+def client(provider: FakeProvider, auth: ChatGPTAuth, tmp_path) -> Iterator[TestClient]:
+    app = create_app(f"sqlite:///{tmp_path / 'test.db'}", auth=auth)
     app.dependency_overrides[get_provider] = lambda: provider
-    with TestClient(app) as c:
+    with TestClient(
+        app, base_url="http://127.0.0.1", headers={"content-type": "application/json"}
+    ) as c:
         yield c

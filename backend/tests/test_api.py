@@ -1,5 +1,7 @@
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.domain.task import EmailTask
+from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
+from app.interfaces.api import get_provider
 
 
 def test_demo_scenario(client, provider):
@@ -77,3 +79,42 @@ def test_empty_answer_rejected(client):
     session = client.post("/sessions").json()
     task_id = session["task_ids"][0]
     assert client.post(f"/tasks/{task_id}/answer", json={"text": "  "}).status_code == 422
+
+
+def test_rejects_untrusted_host(client):
+    assert client.get("/sessions", headers={"host": "evil.example"}).status_code == 400
+
+
+def test_writes_require_json(client):
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    assert client.post("/sessions", headers=form).status_code == 415
+    assert client.post("/auth/logout", headers=form).status_code == 415
+
+
+def test_auth_status_and_login(client):
+    assert client.get("/auth/status").json() == {
+        "signed_in": False,
+        "email": None,
+        "plan_enabled": False,
+    }
+    url = client.post("/auth/login").json()["authorize_url"]
+    assert url.startswith("https://auth.openai.com/api/accounts/authorize?")
+
+
+def test_callback_redirects_only_to_frontend(client):
+    client.post("/auth/login")
+    response = client.get(
+        "/auth/callback",
+        params={"state": "forged", "code": "c"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "http://127.0.0.1:3000/?auth=invalid_state"
+
+
+def test_signed_out_provider_returns_401(client, auth):
+    provider = ChatGPTPlanProvider(Settings(chatgpt_model="gpt-test"), auth)
+    client.app.dependency_overrides[get_provider] = lambda: provider
+    response = client.post("/sessions")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "sign_in_required"}

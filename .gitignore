@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 .codex/
+.chatgpt-auth/
 .aws/
 auth.json
 credentials.json
