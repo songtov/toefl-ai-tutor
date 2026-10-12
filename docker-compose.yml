@@ -1,6 +1,8 @@
+# Development setup: source is mounted and both servers reload on change.
 services:
   backend:
     build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log --reload
     env_file: ./backend/.env
     environment:
       # Override any local paths in .env so data stays in the volume.
@@ -9,12 +11,22 @@ services:
       FRONTEND_URL: http://127.0.0.1:${FRONTEND_PORT:-3000}
     volumes:
       - tutor-data:/data
+      - ./backend/app:/app/app
     # Loopback only: the API has no user accounts, and this port receives the OAuth callback.
     ports:
       - "127.0.0.1:1455:8000"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      target: dev
+    environment:
+      API_URL: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      # Keep the image's Linux node_modules and the container's build cache off the host.
+      - /app/node_modules
+      - /app/.next
     depends_on:
       - backend
     ports:

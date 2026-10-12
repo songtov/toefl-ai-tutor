@@ -32,6 +32,9 @@ Open http://127.0.0.1:3000, choose **Continue with ChatGPT**, and approve access
 OpenAI redirects back to `http://127.0.0.1:1455/auth/callback`, which Docker forwards to the backend container, so the sign-in must happen in a browser on the same machine.
 The database and credentials live in the `tutor-data` volume and survive restarts; `docker compose down -v` deletes them.
 
+`docker-compose.yml` is the development setup: `backend/app` and `frontend` are mounted into the containers, uvicorn runs with `--reload`, and the frontend runs `next dev`, so edits apply without rebuilding.
+After changing dependencies (`pyproject.toml`, `package.json`), run `docker compose up -d --build -V` to rebuild and refresh `node_modules`.
+
 ## Run without Docker
 
 Backend (Python 3.12+, [uv](https://docs.astral.sh/uv/)). The OAuth callback is `http://127.0.0.1:<OAUTH_CALLBACK_PORT>/auth/callback`, so run the backend on that port (default 1455):
