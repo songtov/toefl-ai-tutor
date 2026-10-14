@@ -125,6 +125,10 @@ export default function Home() {
       if (failed.length) throw new Error(`${failed.length} answer(s) failed to score. Submit again to retry.`);
     });
 
+  if (auth && !auth.signed_in) {
+    return <SignIn onLogin={onLogin} busy={busy} error={error} />;
+  }
+
   if (!detail) {
     return (
       <Shell
@@ -147,11 +151,7 @@ export default function Home() {
         busy={busy}
         error={error}
       >
-        {auth?.signed_in ? (
-          <SetList sessions={sessions} onOpen={openSet} disabled={busy !== null} />
-        ) : (
-          auth && <p className="p-6 text-sm">Continue with ChatGPT to start practicing.</p>
-        )}
+        {auth && <SetList sessions={sessions} onOpen={openSet} disabled={busy !== null} />}
       </Shell>
     );
   }
@@ -287,6 +287,46 @@ function Shell({
   );
 }
 
+function SignIn({
+  onLogin,
+  busy,
+  error,
+}: {
+  onLogin: () => void;
+  busy: string | null;
+  error: string | null;
+}) {
+  return (
+    <div className="flex min-h-screen flex-col bg-exam-panel">
+      <header className="bg-exam-bar px-4 py-2.5 text-white sm:px-6">
+        <span className="text-sm font-bold tracking-wide">English AI Tutor</span>
+      </header>
+      <main className="flex flex-1 items-center justify-center p-4">
+        <div className="w-full max-w-sm space-y-6 rounded border border-exam-line bg-white p-8 text-center shadow-sm">
+          <p className="text-sm text-neutral-600">
+            Practice TOEFL Write an Email tasks with rubric scores and sentence-level corrections.
+          </p>
+          <button
+            onClick={onLogin}
+            disabled={busy !== null}
+            className="w-full rounded bg-exam-bar px-4 py-3 font-semibold text-white hover:bg-exam-bar/90 disabled:opacity-40"
+          >
+            {busy ?? "Continue with ChatGPT"}
+          </button>
+          <p className="text-xs text-neutral-500">
+            New here? Continuing creates your account. Practice runs on your ChatGPT plan.
+          </p>
+          {error && (
+            <p role="alert" className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {error}
+            </p>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
 function ManageUsageLink({ className }: { className: string }) {
   return (
     <a href={MANAGE_USAGE_URL} target="_blank" rel="noopener noreferrer" className={className}>
@@ -312,7 +352,6 @@ function AccountMenu({
       Continue with ChatGPT
     </button>
   );
-  if (!auth.signed_in) return continueButton;
   return (
     <div className="flex items-center gap-3 text-xs text-white/80">
       {auth.plan_enabled ? (
