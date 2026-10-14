@@ -37,3 +37,29 @@ Thank you."
 Why 2: the request is present but the other requirements are missing, there is almost no
 development, and repeated grammar errors (verb tense, missing words) weaken clarity.
 """
+
+DISCUSSION_RUBRIC = """\
+Score the post holistically from 0 to 5, then explain the evidence for each criterion.
+
+Criteria:
+- relevance_and_contribution: Does the post answer the professor's question with a clear
+  opinion and add something of its own rather than repeating the other students?
+- development: Are reasons explained with specific details or examples that support the opinion?
+- language_use: How accurate and varied are grammar and vocabulary? Do errors obscure meaning?
+
+Score levels:
+5 - A relevant, very clearly expressed contribution. Ideas are well elaborated with specific
+    explanations and examples. Grammar and vocabulary are varied and precise, with at most
+    minor slips. The post is about 100 words or more.
+4 - A relevant contribution that is easy to follow. Ideas are adequately elaborated. A few
+    errors appear but never block meaning.
+3 - A mostly relevant contribution. Some ideas are missing, unclear, or thinly supported.
+    Noticeable errors or limited vocabulary occasionally make meaning harder to follow.
+2 - Some attempt to contribute, but ideas are poorly elaborated or partly off-topic. Frequent
+    errors often make meaning unclear.
+1 - Few relevant ideas, little elaboration, and serious errors that make most of the post
+    hard to understand.
+0 - Blank, off-topic, not in English, or copied from the prompt or the other posts.
+
+A post that only restates the other students' ideas cannot score above 3.
+"""

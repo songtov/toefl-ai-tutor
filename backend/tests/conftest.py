@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.application.llm import LLMResult, Usage
-from app.domain.assessment import Corrections, Score
+from app.domain.assessment import Corrections, DiscussionScore, Score
 from app.infrastructure.chatgpt_auth import ChatGPTAuth, CredentialStore
 from app.infrastructure.db import AuthSession, User
 from app.interfaces.api import get_provider
@@ -27,6 +27,14 @@ CANNED: dict[type[BaseModel], dict] = {
             {"criterion": "organization", "rationale": "Mostly logical."},
             {"criterion": "language_use", "rationale": "Some tense errors."},
             {"criterion": "tone_and_register", "rationale": "Polite."},
+        ],
+    },
+    DiscussionScore: {
+        "score": 4,
+        "criteria": [
+            {"criterion": "relevance_and_contribution", "rationale": "Adds a new point."},
+            {"criterion": "development", "rationale": "One example."},
+            {"criterion": "language_use", "rationale": "Minor slips."},
         ],
     },
     Corrections: {

@@ -1,14 +1,14 @@
 # toefl-ai-tutor
 
 AI-powered TOEFL Writing practice with prebuilt tasks, rubric-based feedback, and sentence-level corrections.
-The current MVP shows fixed sets of three **Write an Email** tasks from a task bank and saves answers and feedback for review.
+The MVP shows five fixed sets that mirror the Writing section: 10 **Build a Sentence** items (checked against the answer), one **Write an Email** task, and one **Academic Discussion** task (scored by the LLM). Answers and feedback are saved for review.
 
 ## Layout
 
 ```
 backend/            FastAPI + SQLModel, DDD layers
   app/domain/          task, assessment schemas, rubric
-  app/content/         task bank (JSONL): Email tasks and sets, Build a Sentence, Academic Discussion
+  app/content/         task bank (JSONL) for each task type, and the fixed sets
   app/application/     LLMProvider port, tools, agent loop
   app/infrastructure/  Sign in with ChatGPT, ChatGPT plan and OpenAI API providers, database tables
   app/interfaces/      HTTP API

@@ -1,9 +1,10 @@
 from app.application.llm import LLMProvider, LLMResult
-from app.domain.assessment import Corrections, ErrorType, Score
-from app.domain.rubric import EMAIL_RUBRIC
-from app.domain.task import EmailTask
+from app.domain.assessment import Corrections, DiscussionScore, ErrorType, Score
+from app.domain.rubric import DISCUSSION_RUBRIC, EMAIL_RUBRIC
+from app.domain.task import AcademicDiscussionTask, EmailTask
 
 SCORE_PROMPT_VERSION = "email-score-v1"
+DISCUSSION_SCORE_PROMPT_VERSION = "discussion-score-v1"
 CORRECT_PROMPT_VERSION = "email-correct-v1"
 
 
@@ -12,6 +13,16 @@ def score_response(provider: LLMProvider, *, task: EmailTask, text: str) -> LLMR
         system=f"You are a strict, consistent TOEFL writing rater.\n\n{EMAIL_RUBRIC}",
         user=f"Task:\n{task.directions()}\n\nLearner's email:\n{text}",
         schema=Score,
+    )
+
+
+def score_discussion(
+    provider: LLMProvider, *, task: AcademicDiscussionTask, text: str
+) -> LLMResult[DiscussionScore]:
+    return provider.complete(
+        system=f"You are a strict, consistent TOEFL writing rater.\n\n{DISCUSSION_RUBRIC}",
+        user=f"Task:\n{task.directions()}\n\nLearner's post:\n{text}",
+        schema=DiscussionScore,
     )
 
 

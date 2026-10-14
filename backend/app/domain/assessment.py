@@ -5,6 +5,8 @@ from pydantic import BaseModel, field_validator
 
 EmailCriterion = Literal["task_completion", "organization", "language_use", "tone_and_register"]
 EMAIL_CRITERIA: tuple[str, ...] = EmailCriterion.__args__
+DiscussionCriterion = Literal["relevance_and_contribution", "development", "language_use"]
+DISCUSSION_CRITERIA: tuple[str, ...] = DiscussionCriterion.__args__
 
 
 class ErrorType(StrEnum):
@@ -43,6 +45,32 @@ class Score(BaseModel):
     def covers_each_criterion_once(cls, v: list[CriterionRationale]) -> list[CriterionRationale]:
         if sorted(c.criterion for c in v) != sorted(EMAIL_CRITERIA):
             raise ValueError(f"criteria must cover each of {EMAIL_CRITERIA} exactly once")
+        return v
+
+
+class DiscussionCriterionRationale(BaseModel):
+    criterion: DiscussionCriterion
+    rationale: str
+
+
+class DiscussionScore(BaseModel):
+    score: int
+    criteria: list[DiscussionCriterionRationale]
+
+    @field_validator("score")
+    @classmethod
+    def in_range(cls, v: int) -> int:
+        if not 0 <= v <= 5:
+            raise ValueError("score must be between 0 and 5")
+        return v
+
+    @field_validator("criteria")
+    @classmethod
+    def covers_each_criterion_once(
+        cls, v: list[DiscussionCriterionRationale]
+    ) -> list[DiscussionCriterionRationale]:
+        if sorted(c.criterion for c in v) != sorted(DISCUSSION_CRITERIA):
+            raise ValueError(f"criteria must cover each of {DISCUSSION_CRITERIA} exactly once")
         return v
 
 

@@ -9,11 +9,17 @@ from app.config import Settings
 from app.infrastructure.chatgpt_auth import ChatGPTAuth
 from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
 from app.infrastructure.db import Task, User
-from app.infrastructure.task_bank import load_email_sets, load_email_tasks
+from app.infrastructure.task_bank import load_bank, load_sets
 from app.interfaces.api import get_provider
 from app.main import create_app
 from tests.conftest import ENCRYPTION_KEY, sign_in_as
 from tests.test_chatgpt_auth import CLIENT_ID, KEY, FakeOpenAI
+
+EMAIL, DISCUSSION = 10, 11
+
+
+def _bank_task(set_id: int, index: int):
+    return load_bank()[load_sets()[set_id].task_ids[index]]
 
 
 def test_demo_scenario(client, provider):
@@ -21,18 +27,25 @@ def test_demo_scenario(client, provider):
     assert created.status_code == 200
     session = created.json()
     assert session["plan_reason"]
-    assert len(session["task_ids"]) == 3
+    assert len(session["task_ids"]) == 12
 
     task = client.get(f"/sessions/{session['id']}/next").json()
-    assert task["type"] == "write_an_email"
-    first_id = load_email_sets()[1].task_ids[0]
-    assert task["content"] == load_email_tasks()[first_id].task.model_dump()
-    assert len(task["content"]["requirements"]) == 3
+    assert task["type"] == "build_a_sentence"
+    bank = _bank_task(1, 0).content
+    assert sorted(task["content"]["chunks"]) == sorted(bank.answer + bank.distractors)
+    assert "answer" not in task["content"]
 
-    answered = client.post(f"/tasks/{task['id']}/answer", json={"text": "I go there yesterday."})
+    answered = client.post(f"/tasks/{task['id']}/answer", json={"chunks": bank.answer})
+    body = answered.json()
+    assert (body["score"], body["max_score"]) == (1, 1)
+    assert body["correct_answer"] == bank.sentence(bank.answer)
+    assert body["usage"]["cost_usd"] == 0
+
+    email_id = session["task_ids"][EMAIL]
+    answered = client.post(f"/tasks/{email_id}/answer", json={"text": "I go there yesterday."})
     assert answered.status_code == 200
     body = answered.json()
-    assert body["score"] == 3
+    assert (body["score"], body["max_score"]) == (3, 5)
     assert {c["criterion"] for c in body["criteria"]} == {
         "task_completion",
         "organization",
@@ -40,39 +53,71 @@ def test_demo_scenario(client, provider):
         "tone_and_register",
     }
     assert body["corrections"][0]["error_types"] == ["verb_tense"]
+    assert body["correct_answer"] is None
     assert body["usage"] == {"input_tokens": 200, "output_tokens": 100, "cost_usd": 0.002}
 
-    for task_id in session["task_ids"][1:]:
-        client.post(f"/tasks/{task_id}/answer", json={"text": "Hello."})
+    discussion_id = session["task_ids"][DISCUSSION]
+    body = client.post(f"/tasks/{discussion_id}/answer", json={"text": "I agree."}).json()
+    assert body["score"] == 4
+    assert {c["criterion"] for c in body["criteria"]} == {
+        "relevance_and_contribution",
+        "development",
+        "language_use",
+    }
+
+    for index in range(1, 10):
+        chunks = _bank_task(1, index).content.answer
+        client.post(f"/tasks/{session['task_ids'][index]}/answer", json={"chunks": chunks})
     assert client.get(f"/sessions/{session['id']}/next").status_code == 404
 
 
+def test_build_a_sentence_scoring(client, provider):
+    task_ids = client.post("/sets/1/session").json()["task_ids"]
+    first, second = _bank_task(1, 0).content, _bank_task(1, 1).content
+
+    wrong = list(reversed(second.answer))
+    body = client.post(f"/tasks/{task_ids[1]}/answer", json={"chunks": wrong}).json()
+    assert body["score"] == 0
+    assert body["correct_answer"] == second.sentence(second.answer)
+
+    invalid = [{"chunks": first.answer[:-1]}, {"chunks": ["made up", *first.answer[1:]]}, {}]
+    for payload in invalid:
+        assert client.post(f"/tasks/{task_ids[0]}/answer", json=payload).status_code == 422
+    assert provider.calls == []
+
+
 def test_set_list_and_detail(client):
-    sets = load_email_sets()
     listed = client.get("/sets").json()
-    assert [s["id"] for s in listed] == list(sets)
+    assert [s["id"] for s in listed] == list(load_sets())
     assert all(s["session_id"] is None and s["answered_count"] == 0 for s in listed)
 
     session = client.post("/sets/2/session").json()
-    client.post(f"/tasks/{session['task_ids'][0]}/answer", json={"text": "I go there yesterday."})
+    email_id = session["task_ids"][EMAIL]
+    client.post(f"/tasks/{email_id}/answer", json={"text": "I go there yesterday."})
 
     listed = {s["id"]: s for s in client.get("/sets").json()}
-    assert listed[2] == {"id": 2, "task_count": 3, "session_id": session["id"], "answered_count": 1}
+    assert listed[2] == {
+        "id": 2,
+        "task_count": 12,
+        "session_id": session["id"],
+        "answered_count": 1,
+    }
     assert listed[1]["session_id"] is None
 
     detail = client.get(f"/sessions/{session['id']}").json()
     assert [t["id"] for t in detail["tasks"]] == session["task_ids"]
-    done, pending = detail["tasks"][0], detail["tasks"][1]
+    done, pending = detail["tasks"][EMAIL], detail["tasks"][DISCUSSION]
     assert done["answer_text"] == "I go there yesterday."
     assert done["result"]["score"] == 3
     assert done["result"]["corrections"][0]["corrected"] == "I went there yesterday."
     assert pending["answer_text"] is None and pending["result"] is None
+    assert pending["content"]["professor"]["name"]
 
     assert client.get("/sessions/999").status_code == 404
 
 
 def test_answer_twice_rejected(client):
-    task_id = client.post("/sets/1/session").json()["task_ids"][0]
+    task_id = client.post("/sets/1/session").json()["task_ids"][EMAIL]
     assert client.post(f"/tasks/{task_id}/answer", json={"text": "Hi."}).status_code == 200
     assert client.post(f"/tasks/{task_id}/answer", json={"text": "Hi."}).status_code == 409
 
@@ -85,7 +130,7 @@ def test_opening_a_set_reuses_its_session_without_llm(client, provider):
 
     with Session(client.app.state.engine) as db:
         bank_ids = db.exec(select(Task.bank_id).order_by(col(Task.id))).all()
-    assert bank_ids == load_email_sets()[3].task_ids
+    assert bank_ids == load_sets()[3].task_ids
 
     assert client.post("/sets/999/session").status_code == 404
 
@@ -97,7 +142,7 @@ def test_unknown_session_and_task(client):
 
 def test_empty_answer_rejected(client):
     session = client.post("/sets/1/session").json()
-    task_id = session["task_ids"][0]
+    task_id = session["task_ids"][EMAIL]
     assert client.post(f"/tasks/{task_id}/answer", json={"text": "  "}).status_code == 422
 
 
@@ -143,7 +188,7 @@ def test_signed_out_provider_returns_401(client):
     auth = client.app.state.auth
     provider = ChatGPTPlanProvider(Settings(chatgpt_model="gpt-test"), lambda: auth.access_token(1))
     client.app.dependency_overrides[get_provider] = lambda: provider
-    task_id = client.post("/sets/1/session").json()["task_ids"][0]
+    task_id = client.post("/sets/1/session").json()["task_ids"][EMAIL]
     response = client.post(f"/tasks/{task_id}/answer", json={"text": "Hi."})
     assert response.status_code == 401
     assert response.json() == {"detail": "sign_in_required"}
