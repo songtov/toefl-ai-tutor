@@ -1,4 +1,4 @@
-"""Sign in with ChatGPT for open-source/local apps: OAuth (PKCE) and local credential storage.
+"""Sign in with ChatGPT for open-source/local apps: OAuth (PKCE) and per-user credential storage.
 
 See https://developers.openai.com/siwc/token-sharing-open-source. Tokens never leave this module
 except as a bearer credential for the Responses API.
@@ -17,12 +17,17 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
+from cryptography.fernet import Fernet
 from pydantic import BaseModel
+from sqlalchemy.engine import Engine
+from sqlmodel import Session
+
+from app.infrastructure.db import ChatGPTCredential
 
 ISSUER = "https://auth.openai.com"
 AUTHORIZE_URL = f"{ISSUER}/api/accounts/authorize"
@@ -77,38 +82,50 @@ class Credentials(BaseModel):
         return Credentials(client_id=self.client_id, subject=self.subject, email=self.email)
 
 
-class CredentialStore:
-    """Owner-only files: `host_id` (stable per host) and `credentials.json`."""
+class CredentialStore(Protocol):
+    def load(self, user_id: int) -> Credentials | None: ...
 
-    def __init__(self, directory: Path) -> None:
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        directory.chmod(0o700)
-        self._dir = directory
+    def save(self, user_id: int, credentials: Credentials) -> None: ...
 
-    def host_id(self) -> str:
-        path = self._dir / "host_id"
-        if path.exists():
-            return path.read_text().strip()
-        value = f"urn:uuid:{uuid.uuid4()}"
-        self._write(path, value)
-        return value
 
-    def load(self) -> Credentials | None:
-        path = self._dir / "credentials.json"
-        return Credentials.model_validate_json(path.read_text()) if path.exists() else None
+class EncryptedCredentialStore:
+    """One Fernet-encrypted credential record per user in the database."""
 
-    def save(self, credentials: Credentials) -> None:
-        self._write(self._dir / "credentials.json", credentials.model_dump_json())
+    def __init__(self, engine: Engine, fernet: Fernet) -> None:
+        self._engine = engine
+        self._fernet = fernet
 
-    def _write(self, path: Path, text: str) -> None:
-        fd, tmp = tempfile.mkstemp(dir=self._dir)  # created with mode 0600
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+    def load(self, user_id: int) -> Credentials | None:
+        with Session(self._engine) as db:
+            row = db.get(ChatGPTCredential, user_id)
+        if row is None:
+            return None
+        return Credentials.model_validate_json(self._fernet.decrypt(row.ciphertext))
+
+    def save(self, user_id: int, credentials: Credentials) -> None:
+        ciphertext = self._fernet.encrypt(credentials.model_dump_json().encode()).decode()
+        with Session(self._engine) as db:
+            db.merge(ChatGPTCredential(user_id=user_id, ciphertext=ciphertext))
+            db.commit()
+
+
+def load_host_id(directory: Path) -> str:
+    """Stable per-host ID in an owner-only file (`0700` directory, `0600` file)."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    path = directory / "host_id"
+    if path.exists():
+        return path.read_text().strip()
+    value = f"urn:uuid:{uuid.uuid4()}"
+    fd, tmp = tempfile.mkstemp(dir=directory)  # created with mode 0600
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(value)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return value
 
 
 @dataclass(frozen=True)
@@ -117,6 +134,7 @@ class _PendingLogin:
     nonce: str
     verifier: str
     client_id: str
+    subject: str | None
     created_at: float
 
 
@@ -138,6 +156,7 @@ class ChatGPTAuth:
         self,
         store: CredentialStore,
         *,
+        host_id: str,
         redirect_uri: str,
         agent_name: str,
         http: httpx.Client,
@@ -145,6 +164,7 @@ class ChatGPTAuth:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._store = store
+        self._host_id = host_id
         self._redirect_uri = redirect_uri
         self._agent_name = agent_name
         self._http = http
@@ -154,18 +174,24 @@ class ChatGPTAuth:
         self._signing_key = signing_key
         self._clock = clock
         self._lock = threading.Lock()
-        self._pending: _PendingLogin | None = None
+        self._pending: dict[str, _PendingLogin] = {}
 
-    def status(self) -> Credentials | None:
-        return self._store.load()
+    def status(self, user_id: int) -> Credentials | None:
+        return self._store.load(user_id)
 
-    def start_login(self) -> str:
-        saved = self._store.load()
+    def save(self, user_id: int, credentials: Credentials) -> None:
+        with self._lock:
+            self._store.save(user_id, credentials)
+
+    def start_login(self, user_id: int | None) -> tuple[str, str]:
+        """Returns the authorize URL and its `state`. `user_id` reuses that user's registration."""
+        saved = self._store.load(user_id) if user_id is not None else None
         pending = _PendingLogin(
             state=secrets.token_urlsafe(32),
             nonce=secrets.token_urlsafe(32),
             verifier=secrets.token_urlsafe(64),
             client_id=saved.client_id if saved else REGISTRATION_CLIENT_ID,
+            subject=saved.subject if saved else None,
             created_at=self._clock(),
         )
         params = {
@@ -178,7 +204,7 @@ class ChatGPTAuth:
             "nonce": pending.nonce,
             "code_challenge_method": "S256",
             "code_challenge": _code_challenge(pending.verifier),
-            "ext_agent_host_id": self._store.host_id(),
+            "ext_agent_host_id": self._host_id,
         }
         if saved is None:
             params["agent_name_hint"] = self._agent_name
@@ -187,17 +213,20 @@ class ChatGPTAuth:
                 params["id_token_hint"] = saved.id_token
             if saved.email:
                 params["login_hint"] = saved.email
+        now = self._clock()
         with self._lock:
-            self._pending = pending
-        return f"{AUTHORIZE_URL}?{urlencode(params, quote_via=quote)}"
+            self._pending = {
+                s: p for s, p in self._pending.items() if now - p.created_at <= LOGIN_TTL_S
+            }
+            self._pending[pending.state] = pending
+        return f"{AUTHORIZE_URL}?{urlencode(params, quote_via=quote)}", pending.state
 
     def complete_login(self, params: Mapping[str, str]) -> Credentials:
+        """Verifies the callback and returns the account's credentials. The caller saves them."""
         with self._lock:
-            pending = self._pending
-            state = params.get("state", "").encode()
-            if pending is None or not hmac.compare_digest(state, pending.state.encode()):
-                raise AuthError("invalid_state")
-            self._pending = None
+            pending = self._pending.pop(params.get("state", ""), None)
+        if pending is None:
+            raise AuthError("invalid_state")
         if self._clock() - pending.created_at > LOGIN_TTL_S:
             raise AuthError("login_expired")
         if "error" in params:
@@ -225,24 +254,20 @@ class ChatGPTAuth:
             }
         )
         claims = self._verify_id_token(tokens.get("id_token", ""), client_id, pending.nonce)
-        with self._lock:
-            saved = self._store.load()
-            if saved and saved.client_id == client_id and saved.subject != claims["sub"]:
-                raise AuthError("account_mismatch")
-            credentials = Credentials(
-                client_id=client_id,
-                subject=claims["sub"],
-                email=claims.get("email", ""),
-                id_token=tokens["id_token"],
-                **self._token_fields(tokens),
-            )
-            self._store.save(credentials)
-        return credentials
+        if pending.subject is not None and pending.subject != claims["sub"]:
+            raise AuthError("account_mismatch")
+        return Credentials(
+            client_id=client_id,
+            subject=claims["sub"],
+            email=claims.get("email", ""),
+            id_token=tokens["id_token"],
+            **self._token_fields(tokens),
+        )
 
-    def access_token(self) -> str:
+    def access_token(self, user_id: int) -> str:
         # Held across the refresh call: refresh tokens rotate, so refreshes must not race.
         with self._lock:
-            saved = self._store.load()
+            saved = self._store.load(user_id)
             if saved is None or not saved.signed_in:
                 raise AuthError("sign_in_required")
             if not saved.plan_enabled:
@@ -262,18 +287,17 @@ class ChatGPTAuth:
                 )
             except AuthError as e:
                 if e.code in TERMINAL_REFRESH_ERRORS:
-                    self._store.save(saved.signed_out())
+                    self._store.save(user_id, saved.signed_out())
                     raise AuthError("sign_in_required") from e
                 raise
             refreshed = saved.model_copy(update=self._token_fields(tokens, previous=saved))
-            self._store.save(refreshed)
+            self._store.save(user_id, refreshed)
             return refreshed.access_token
 
-    def logout(self) -> bool:
-        """Clears local tokens. Returns whether OpenAI confirmed revoking the refresh token."""
+    def logout(self, user_id: int) -> bool:
+        """Clears the user's tokens. Returns whether OpenAI confirmed revoking the refresh token."""
         with self._lock:
-            self._pending = None
-            saved = self._store.load()
+            saved = self._store.load(user_id)
             if saved is None:
                 return True
             revoked = not saved.refresh_token
@@ -290,7 +314,7 @@ class ChatGPTAuth:
                     revoked = response.status_code == 200
                 except httpx.HTTPError:
                     revoked = False
-            self._store.save(saved.signed_out())
+            self._store.save(user_id, saved.signed_out())
             return revoked
 
     def _token_request(self, form: dict[str, str]) -> dict[str, Any]:

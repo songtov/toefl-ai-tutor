@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     llm_provider: Literal["chatgpt_plan", "openai_api"] = "chatgpt_plan"
     chatgpt_model: str | None = None
     chatgpt_auth_dir: str = "./.chatgpt-auth"
+    token_encryption_key: str | None = None
     agent_name: str = "toefl-ai-tutor"
     oauth_callback_port: int = 1455
     frontend_url: str = "http://127.0.0.1:3000"

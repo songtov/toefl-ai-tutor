@@ -12,7 +12,7 @@ services:
     volumes:
       - tutor-data:/data
       - ./backend/app:/app/app
-    # Loopback only: the API has no user accounts, and this port receives the OAuth callback.
+    # Loopback only: Sign in with ChatGPT allows only a loopback callback, which this port receives.
     ports:
       - "127.0.0.1:1455:8000"
 

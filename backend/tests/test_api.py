@@ -1,7 +1,19 @@
+from urllib.parse import parse_qs, urlsplit
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, select
+
 from app.config import Settings, get_settings
 from app.domain.task import EmailTask
+from app.infrastructure.chatgpt_auth import ChatGPTAuth
 from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
+from app.infrastructure.db import User
 from app.interfaces.api import get_provider
+from app.main import create_app
+from tests.conftest import ENCRYPTION_KEY, sign_in_as
+from tests.test_chatgpt_auth import CLIENT_ID, KEY, FakeOpenAI
 
 
 def test_demo_scenario(client, provider):
@@ -93,12 +105,19 @@ def test_writes_require_json(client):
 
 def test_auth_status_and_login(client):
     assert client.get("/auth/status").json() == {
-        "signed_in": False,
-        "email": None,
+        "signed_in": True,
+        "email": "user-1@example.com",
         "plan_enabled": False,
     }
     url = client.post("/auth/login").json()["authorize_url"]
     assert url.startswith("https://auth.openai.com/api/accounts/authorize?")
+
+    client.cookies.clear()
+    assert client.get("/auth/status").json() == {
+        "signed_in": False,
+        "email": None,
+        "plan_enabled": False,
+    }
 
 
 def test_callback_redirects_only_to_frontend(client):
@@ -112,9 +131,113 @@ def test_callback_redirects_only_to_frontend(client):
     assert response.headers["location"] == "http://127.0.0.1:3000/?auth=invalid_state"
 
 
-def test_signed_out_provider_returns_401(client, auth):
-    provider = ChatGPTPlanProvider(Settings(chatgpt_model="gpt-test"), auth)
+def test_signed_out_provider_returns_401(client):
+    auth = client.app.state.auth
+    provider = ChatGPTPlanProvider(Settings(chatgpt_model="gpt-test"), lambda: auth.access_token(1))
     client.app.dependency_overrides[get_provider] = lambda: provider
     response = client.post("/sessions")
     assert response.status_code == 401
     assert response.json() == {"detail": "sign_in_required"}
+
+
+def test_requests_without_session_return_401(client):
+    task_id = client.post("/sessions").json()["task_ids"][0]
+    client.cookies.clear()
+    for method, path in [
+        ("POST", "/sessions"),
+        ("GET", "/sessions"),
+        ("GET", "/sessions/1"),
+        ("GET", "/sessions/1/next"),
+        ("POST", f"/tasks/{task_id}/answer"),
+        ("POST", "/auth/logout"),
+    ]:
+        response = client.request(method, path, json={"text": "Hi."})
+        assert response.status_code == 401, path
+        assert response.json() == {"detail": "sign_in_required"}
+
+
+def test_users_cannot_see_each_others_data(client):
+    session = client.post("/sessions").json()
+    task_id = session["task_ids"][0]
+
+    sign_in_as(client, "user-2")
+    assert client.get("/sessions").json() == []
+    assert client.get(f"/sessions/{session['id']}").status_code == 404
+    assert client.get(f"/sessions/{session['id']}/next").status_code == 404
+    assert client.post(f"/tasks/{task_id}/answer", json={"text": "Hi."}).status_code == 404
+
+
+@pytest.fixture
+def server() -> FakeOpenAI:
+    return FakeOpenAI()
+
+
+@pytest.fixture
+def oauth_client(server, tmp_path):
+    def make_auth(store):
+        return ChatGPTAuth(
+            store,
+            host_id="urn:uuid:test-host",
+            redirect_uri="http://127.0.0.1:1455/auth/callback",
+            agent_name="toefl-ai-tutor",
+            http=httpx.Client(transport=httpx.MockTransport(server.handle)),
+            signing_key=lambda token: KEY.public_key(),
+        )
+
+    app = create_app(
+        f"sqlite:///{tmp_path / 'test.db'}", encryption_key=ENCRYPTION_KEY, make_auth=make_auth
+    )
+    with TestClient(
+        app, base_url="http://127.0.0.1", headers={"content-type": "application/json"}
+    ) as c:
+        yield c
+
+
+def _sign_in_with_chatgpt(client: TestClient, server: FakeOpenAI) -> dict[str, str]:
+    url = client.post("/auth/login").json()["authorize_url"]
+    params = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+    server.nonce = params["nonce"]
+    response = client.get(
+        "/auth/callback",
+        params={"code": "c", "state": params["state"], "client_id": CLIENT_ID},
+        follow_redirects=False,
+    )
+    assert response.headers["location"] == "http://127.0.0.1:3000/?auth=ok"
+    return params
+
+
+def test_chatgpt_sign_in_creates_account_and_session(oauth_client, server):
+    params = _sign_in_with_chatgpt(oauth_client, server)
+    assert params["client_id"] == "dynamic_agent_client"
+    assert oauth_client.get("/auth/status").json() == {
+        "signed_in": True,
+        "email": "me@example.com",
+        "plan_enabled": True,
+    }
+    assert oauth_client.get("/sessions").status_code == 200
+
+    assert oauth_client.post("/auth/logout").json() == {"revoked": True}
+    assert oauth_client.get("/sessions").status_code == 401
+
+    # The same browser signs in again with the saved registration and gets the same account.
+    params = _sign_in_with_chatgpt(oauth_client, server)
+    assert params["client_id"] == CLIENT_ID
+    assert params["login_hint"] == "me@example.com"
+    with Session(oauth_client.app.state.engine) as db:
+        users = db.exec(select(User)).all()
+    assert [(u.provider, u.subject, u.email) for u in users] == [
+        ("chatgpt", "user-1", "me@example.com")
+    ]
+
+
+def test_callback_requires_the_browser_that_started_login(oauth_client, server):
+    url = oauth_client.post("/auth/login").json()["authorize_url"]
+    state = parse_qs(urlsplit(url).query)["state"][0]
+    oauth_client.cookies.clear()
+    response = oauth_client.get(
+        "/auth/callback",
+        params={"code": "c", "state": state, "client_id": CLIENT_ID},
+        follow_redirects=False,
+    )
+    assert response.headers["location"] == "http://127.0.0.1:3000/?auth=invalid_state"
+    assert server.requests == []

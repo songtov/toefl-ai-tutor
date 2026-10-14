@@ -7,7 +7,9 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import jwt
 import pytest
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.asymmetric import rsa
+from sqlmodel import Session
 
 from app.infrastructure.chatgpt_auth import (
     ISSUER,
@@ -17,13 +19,17 @@ from app.infrastructure.chatgpt_auth import (
     SCOPES,
     AuthError,
     ChatGPTAuth,
-    CredentialStore,
+    EncryptedCredentialStore,
+    load_host_id,
 )
+from app.infrastructure.db import ChatGPTCredential, init_db, make_engine
 
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 CLIENT_ID = "oaiapp_123"
 NOW = time.time()
+HOST_ID = "urn:uuid:test-host"
+USER = 1
 
 
 class FakeOpenAI:
@@ -88,14 +94,22 @@ def clock() -> Clock:
 
 
 @pytest.fixture
-def store(tmp_path) -> CredentialStore:
-    return CredentialStore(tmp_path / "auth")
+def engine(tmp_path):
+    engine = make_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    init_db(engine)
+    return engine
+
+
+@pytest.fixture
+def store(engine) -> EncryptedCredentialStore:
+    return EncryptedCredentialStore(engine, Fernet(Fernet.generate_key()))
 
 
 @pytest.fixture
 def auth(store, server, clock) -> ChatGPTAuth:
     return ChatGPTAuth(
         store,
+        host_id=HOST_ID,
         redirect_uri="http://127.0.0.1:1455/auth/callback",
         agent_name="toefl-ai-tutor",
         http=httpx.Client(transport=httpx.MockTransport(server.handle)),
@@ -104,26 +118,31 @@ def auth(store, server, clock) -> ChatGPTAuth:
     )
 
 
-def start(auth: ChatGPTAuth, server: FakeOpenAI) -> dict[str, str]:
-    url = auth.start_login()
+def start(auth: ChatGPTAuth, server: FakeOpenAI, user_id: int | None = USER) -> dict[str, str]:
+    url, state = auth.start_login(user_id)
     params = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+    assert params["state"] == state
     server.nonce = params["nonce"]
     return params
 
 
 def sign_in(auth: ChatGPTAuth, server: FakeOpenAI):
     params = start(auth, server)
-    return auth.complete_login({"code": "c", "state": params["state"], "client_id": CLIENT_ID})
+    credentials = auth.complete_login(
+        {"code": "c", "state": params["state"], "client_id": CLIENT_ID}
+    )
+    auth.save(USER, credentials)
+    return credentials
 
 
-def test_first_login_registers_with_pkce(auth, server, store):
-    url = auth.start_login()
+def test_first_login_registers_with_pkce(auth, server):
+    url, _ = auth.start_login(None)
     assert url.startswith("https://auth.openai.com/api/accounts/authorize?")
     assert "+" not in url
     params = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
     assert params["client_id"] == REGISTRATION_CLIENT_ID
     assert params["agent_name_hint"] == "toefl-ai-tutor"
-    assert params["ext_agent_host_id"] == store.host_id()
+    assert params["ext_agent_host_id"] == HOST_ID
     assert params["scope"] == SCOPES
     assert params["redirect_uri"] == "http://127.0.0.1:1455/auth/callback"
     assert "id_token_hint" not in params
@@ -139,22 +158,25 @@ def test_first_login_registers_with_pkce(auth, server, store):
     assert form["resource"] == "https://api.openai.com/v1"
 
 
-def test_login_saves_credentials_owner_only(auth, server, store, tmp_path):
+def test_login_saves_encrypted_credentials_per_user(auth, server, store, engine):
     credentials = sign_in(auth, server)
     assert credentials.client_id == CLIENT_ID
     assert credentials.subject == "user-1"
     assert credentials.plan_enabled
-    assert store.load() == credentials
-    assert stat.S_IMODE((tmp_path / "auth").stat().st_mode) == 0o700
-    for name in ("credentials.json", "host_id"):
-        assert stat.S_IMODE((tmp_path / "auth" / name).stat().st_mode) == 0o600
-    assert {p.name for p in (tmp_path / "auth").iterdir()} == {"credentials.json", "host_id"}
+    assert store.load(USER) == credentials
+    assert store.load(USER + 1) is None
+    with Session(engine) as db:
+        ciphertext = db.get(ChatGPTCredential, USER).ciphertext
+    for secret in ("access-1", "refresh-1", credentials.id_token, "me@example.com"):
+        assert secret not in ciphertext
 
 
-def test_host_id_is_stable(store, tmp_path):
-    host_id = store.host_id()
+def test_host_id_is_stable_and_owner_only(tmp_path):
+    host_id = load_host_id(tmp_path / "auth")
     assert host_id.startswith("urn:uuid:")
-    assert CredentialStore(tmp_path / "auth").host_id() == host_id
+    assert load_host_id(tmp_path / "auth") == host_id
+    assert stat.S_IMODE((tmp_path / "auth").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "auth" / "host_id").stat().st_mode) == 0o600
 
 
 def test_reauth_reuses_client_id_and_hints(auth, server):
@@ -178,17 +200,16 @@ def test_reauth_reuses_client_id_and_hints(auth, server):
         ({"client_id": CLIENT_ID}, "missing_code"),
     ],
 )
-def test_bad_callback_rejected_without_exchange(auth, server, store, callback, code):
-    params = start(auth, server)
+def test_bad_callback_rejected_without_exchange(auth, server, callback, code):
+    params = start(auth, server, user_id=None)
     with pytest.raises(AuthError) as e:
         auth.complete_login({"state": params["state"], **callback})
     assert e.value.code == code
     assert server.requests == []
-    assert store.load() is None
 
 
 def test_state_is_single_use_and_expires(auth, server, clock):
-    params = start(auth, server)
+    params = start(auth, server, user_id=None)
     callback = {"code": "c", "state": params["state"], "client_id": CLIENT_ID}
     auth.complete_login(callback)
     with pytest.raises(AuthError, match="invalid_state"):
@@ -218,21 +239,28 @@ def test_reauth_rejects_other_client_id(auth, server):
     ],
     ids=["signature", "audience", "issuer", "nonce", "expired"],
 )
-def test_invalid_id_token_rejected(auth, server, store, tamper):
+def test_invalid_id_token_rejected(auth, server, tamper):
     tamper(server)
-    params = start(auth, server)
+    params = start(auth, server, user_id=None)
     with pytest.raises(AuthError, match="invalid_id_token"):
         auth.complete_login({"code": "c", "state": params["state"], "client_id": CLIENT_ID})
-    assert store.load() is None
 
 
-def test_reauth_with_other_account_rejected(auth, server, store):
-    first = sign_in(auth, server)
+def test_reauth_with_other_account_rejected(auth, server):
+    sign_in(auth, server)
     server.claims["sub"] = "user-2"
     params = start(auth, server)
     with pytest.raises(AuthError, match="account_mismatch"):
         auth.complete_login({"code": "c", "state": params["state"]})
-    assert store.load() == first
+
+
+def test_concurrent_logins_keep_their_own_state(auth, server):
+    first = start(auth, server, user_id=None)
+    second = start(auth, server, user_id=None)
+    server.nonce = first["nonce"]
+    auth.complete_login({"code": "c", "state": first["state"], "client_id": CLIENT_ID})
+    server.nonce = second["nonce"]
+    auth.complete_login({"code": "c", "state": second["state"], "client_id": "oaiapp_456"})
 
 
 def test_without_plan_scope_no_access_token(auth, server):
@@ -240,14 +268,14 @@ def test_without_plan_scope_no_access_token(auth, server):
     credentials = sign_in(auth, server)
     assert credentials.signed_in and not credentials.plan_enabled
     with pytest.raises(AuthError, match="plan_not_enabled"):
-        auth.access_token()
+        auth.access_token(USER)
 
 
 def test_access_token_refreshes_and_rotates(auth, server, store, clock):
     sign_in(auth, server)
-    assert auth.access_token() == "access-1"
+    assert auth.access_token(USER) == "access-1"
     clock.now += 3600 - 60
-    assert auth.access_token() == "access-2"
+    assert auth.access_token(USER) == "access-2"
     _, form = server.requests[-1]
     assert form == {
         "grant_type": "refresh_token",
@@ -255,7 +283,7 @@ def test_access_token_refreshes_and_rotates(auth, server, store, clock):
         "refresh_token": "refresh-1",
         "resource": "https://api.openai.com/v1",
     }
-    saved = store.load()
+    saved = store.load(USER)
     assert (saved.refresh_token, saved.expires_at) == ("refresh-2", clock.now + 3600)
 
 
@@ -264,8 +292,8 @@ def test_terminal_refresh_error_signs_out(auth, server, store, clock):
     clock.now += 3600
     server.token_error = (400, {"error": "refresh_token_reused"})
     with pytest.raises(AuthError, match="sign_in_required"):
-        auth.access_token()
-    saved = store.load()
+        auth.access_token(USER)
+    saved = store.load(USER)
     assert not saved.signed_in and saved.client_id == CLIENT_ID
 
 
@@ -274,13 +302,13 @@ def test_transient_refresh_error_keeps_credentials(auth, server, store, clock):
     clock.now += 3600
     server.token_error = (503, {"detail": "unavailable"})
     with pytest.raises(AuthError, match="http_503"):
-        auth.access_token()
-    assert store.load() == credentials
+        auth.access_token(USER)
+    assert store.load(USER) == credentials
 
 
 def test_logout_revokes_and_keeps_registration(auth, server, store):
     sign_in(auth, server)
-    assert auth.logout() is True
+    assert auth.logout(USER) is True
     url, form = server.requests[-1]
     assert url == REVOKE_URL
     assert form == {
@@ -288,7 +316,7 @@ def test_logout_revokes_and_keeps_registration(auth, server, store):
         "token_type_hint": "refresh_token",
         "client_id": CLIENT_ID,
     }
-    saved = store.load()
+    saved = store.load(USER)
     assert not saved.signed_in and not saved.refresh_token and not saved.id_token
     assert (saved.client_id, saved.email) == (CLIENT_ID, "me@example.com")
     params = start(auth, server)

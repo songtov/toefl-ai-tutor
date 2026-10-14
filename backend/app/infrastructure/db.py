@@ -1,11 +1,9 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlalchemy.engine import Engine
-from sqlmodel import Field, Session, SQLModel, create_engine
-
-DEFAULT_USER_ID = 1
+from sqlmodel import Field, SQLModel, create_engine
 
 
 def _now() -> datetime:
@@ -14,10 +12,28 @@ def _now() -> datetime:
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
+    # Emails can repeat across sign-in providers and ChatGPT workspaces, so the identity is
+    # the provider's subject.
+    __table_args__ = (UniqueConstraint("provider", "subject"),)
     id: int | None = Field(default=None, primary_key=True)
-    email: str = Field(unique=True)
+    provider: str
+    subject: str
+    email: str = ""
     password_hash: str = ""
     role: str = "learner"
+
+
+class AuthSession(SQLModel, table=True):
+    __tablename__ = "auth_sessions"
+    token_hash: str = Field(primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    expires_at: float
+
+
+class ChatGPTCredential(SQLModel, table=True):
+    __tablename__ = "chatgpt_credentials"
+    user_id: int = Field(foreign_key="users.id", primary_key=True)
+    ciphertext: str
 
 
 class StudySession(SQLModel, table=True):
@@ -74,7 +90,3 @@ def make_engine(url: str) -> Engine:
 
 def init_db(engine: Engine) -> None:
     SQLModel.metadata.create_all(engine)
-    with Session(engine) as db:
-        if db.get(User, DEFAULT_USER_ID) is None:
-            db.add(User(id=DEFAULT_USER_ID, email="me@localhost"))
-            db.commit()

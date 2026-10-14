@@ -1,16 +1,24 @@
+import secrets
+import time
 from collections.abc import Iterator
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from sqlmodel import Session
 
 from app.application.llm import LLMResult, Usage
 from app.domain.assessment import Corrections, Score
 from app.domain.task import EmailTask
 from app.infrastructure.chatgpt_auth import ChatGPTAuth, CredentialStore
+from app.infrastructure.db import AuthSession, User
 from app.interfaces.api import get_provider
+from app.interfaces.deps import SESSION_COOKIE, hash_token
 from app.main import create_app
+
+ENCRYPTION_KEY = Fernet.generate_key().decode()
 
 CANNED: dict[type[BaseModel], dict] = {
     EmailTask: {
@@ -65,10 +73,10 @@ def provider() -> FakeProvider:
     return FakeProvider()
 
 
-@pytest.fixture
-def auth(tmp_path) -> ChatGPTAuth:
+def make_auth(store: CredentialStore) -> ChatGPTAuth:
     return ChatGPTAuth(
-        CredentialStore(tmp_path / "auth"),
+        store,
+        host_id="urn:uuid:test-host",
         redirect_uri="http://127.0.0.1:1455/auth/callback",
         agent_name="toefl-ai-tutor",
         http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))),
@@ -76,11 +84,30 @@ def auth(tmp_path) -> ChatGPTAuth:
     )
 
 
+def sign_in_as(client: TestClient, subject: str) -> int:
+    """Creates a user with a session and sends its cookie from `client`. Returns the user ID."""
+    token = secrets.token_urlsafe(32)
+    with Session(client.app.state.engine) as db:
+        user = User(provider="chatgpt", subject=subject, email=f"{subject}@example.com")
+        db.add(user)
+        db.flush()
+        db.add(
+            AuthSession(token_hash=hash_token(token), user_id=user.id, expires_at=time.time() + 60)
+        )
+        db.commit()
+        user_id = user.id
+    client.cookies.set(SESSION_COOKIE, token)
+    return user_id
+
+
 @pytest.fixture
-def client(provider: FakeProvider, auth: ChatGPTAuth, tmp_path) -> Iterator[TestClient]:
-    app = create_app(f"sqlite:///{tmp_path / 'test.db'}", auth=auth)
+def client(provider: FakeProvider, tmp_path) -> Iterator[TestClient]:
+    app = create_app(
+        f"sqlite:///{tmp_path / 'test.db'}", encryption_key=ENCRYPTION_KEY, make_auth=make_auth
+    )
     app.dependency_overrides[get_provider] = lambda: provider
     with TestClient(
         app, base_url="http://127.0.0.1", headers={"content-type": "application/json"}
     ) as c:
+        sign_in_as(c, "user-1")
         yield c

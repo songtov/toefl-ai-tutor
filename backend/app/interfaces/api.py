@@ -1,11 +1,10 @@
-from collections.abc import Iterator
 from datetime import datetime
 from functools import partial
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, col, select
+from sqlmodel import col, select
 
 from app.application import tools
 from app.application.agent import (
@@ -20,22 +19,19 @@ from app.config import Settings, get_settings
 from app.domain.assessment import Corrections, CriterionRationale, Score, SentenceCorrection
 from app.domain.task import EmailTask
 from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
-from app.infrastructure.db import DEFAULT_USER_ID, Response, Result, StudySession, Task
+from app.infrastructure.db import Response, Result, StudySession, Task
 from app.infrastructure.openai_provider import OpenAIAPIProvider
-from app.interfaces.auth_api import Auth
+from app.interfaces.deps import Auth, CurrentUser, Db
 
 router = APIRouter()
 
 
-def get_db(request: Request) -> Iterator[Session]:
-    with Session(request.app.state.engine) as db:
-        yield db
-
-
-def get_provider(settings: Annotated[Settings, Depends(get_settings)], auth: Auth) -> LLMProvider:
+def get_provider(
+    settings: Annotated[Settings, Depends(get_settings)], auth: Auth, user: CurrentUser
+) -> LLMProvider:
     try:
         if settings.llm_provider == "chatgpt_plan":
-            return ChatGPTPlanProvider(settings, auth)
+            return ChatGPTPlanProvider(settings, partial(auth.access_token, user.id))
         return OpenAIAPIProvider(settings)
     except RuntimeError as e:
         raise HTTPException(503, str(e)) from e
@@ -55,7 +51,6 @@ def get_agent(
     return AgentLoop(registry, max_steps=settings.agent_max_steps, timeout_s=settings.llm_timeout_s)
 
 
-Db = Annotated[Session, Depends(get_db)]
 Agent = Annotated[AgentLoop, Depends(get_agent)]
 
 
@@ -137,7 +132,7 @@ def _task_out(task: Task) -> TaskOut:
 
 
 @router.post("/sessions", status_code=201)
-def start_session(db: Db, agent: Agent) -> SessionOut:
+def start_session(db: Db, agent: Agent, user: CurrentUser) -> SessionOut:
     plan = fixed_session_plan()
     outputs = []
     for step in plan:
@@ -147,7 +142,7 @@ def start_session(db: Db, agent: Agent) -> SessionOut:
         outputs.append(run.outputs[0])
 
     session = StudySession(
-        user_id=DEFAULT_USER_ID,
+        user_id=user.id,
         plan=[{"tool": s.tool, "args": s.args} for s in plan],
         plan_reason=FIXED_PLAN_REASON,
     )
@@ -158,7 +153,7 @@ def start_session(db: Db, agent: Agent) -> SessionOut:
         tasks.append(
             Task(
                 session_id=session.id,
-                user_id=DEFAULT_USER_ID,
+                user_id=user.id,
                 type=step.args["task_type"],
                 difficulty=step.args["difficulty"],
                 target_weakness=step.args["target_weakness"],
@@ -177,10 +172,10 @@ def start_session(db: Db, agent: Agent) -> SessionOut:
 
 
 @router.get("/sessions")
-def list_sessions(db: Db) -> list[SessionSummaryOut]:
+def list_sessions(db: Db, user: CurrentUser) -> list[SessionSummaryOut]:
     sessions = db.exec(
         select(StudySession)
-        .where(StudySession.user_id == DEFAULT_USER_ID)
+        .where(StudySession.user_id == user.id)
         .order_by(col(StudySession.id).desc())
     ).all()
     out = []
@@ -201,9 +196,9 @@ def list_sessions(db: Db) -> list[SessionSummaryOut]:
 
 
 @router.get("/sessions/{session_id}")
-def get_session(session_id: int, db: Db) -> SessionDetailOut:
+def get_session(session_id: int, db: Db, user: CurrentUser) -> SessionDetailOut:
     session = db.get(StudySession, session_id)
-    if session is None or session.user_id != DEFAULT_USER_ID:
+    if session is None or session.user_id != user.id:
         raise HTTPException(404, "session not found")
     tasks = db.exec(select(Task).where(Task.session_id == session_id).order_by(col(Task.id))).all()
     details = []
@@ -232,9 +227,9 @@ def get_session(session_id: int, db: Db) -> SessionDetailOut:
 
 
 @router.get("/sessions/{session_id}/next")
-def next_task(session_id: int, db: Db) -> TaskOut:
+def next_task(session_id: int, db: Db, user: CurrentUser) -> TaskOut:
     session = db.get(StudySession, session_id)
-    if session is None or session.user_id != DEFAULT_USER_ID:
+    if session is None or session.user_id != user.id:
         raise HTTPException(404, "session not found")
     answered = select(Response.task_id)
     task = db.exec(
@@ -248,9 +243,11 @@ def next_task(session_id: int, db: Db) -> TaskOut:
 
 
 @router.post("/tasks/{task_id}/answer")
-def answer_task(task_id: int, body: AnswerIn, db: Db, agent: Agent) -> AnswerOut:
+def answer_task(
+    task_id: int, body: AnswerIn, db: Db, agent: Agent, user: CurrentUser
+) -> AnswerOut:
     task = db.get(Task, task_id)
-    if task is None or task.user_id != DEFAULT_USER_ID:
+    if task is None or task.user_id != user.id:
         raise HTTPException(404, "task not found")
     if not body.text.strip():
         raise HTTPException(422, "answer is empty")
@@ -270,7 +267,7 @@ def answer_task(task_id: int, body: AnswerIn, db: Db, agent: Agent) -> AnswerOut
     corrected: LLMResult[Corrections]
     scored, corrected = run.outputs
 
-    response = Response(task_id=task_id, user_id=DEFAULT_USER_ID, text=body.text)
+    response = Response(task_id=task_id, user_id=user.id, text=body.text)
     db.add(response)
     db.flush()
     usage = UsageOut(
@@ -280,7 +277,7 @@ def answer_task(task_id: int, body: AnswerIn, db: Db, agent: Agent) -> AnswerOut
     )
     result = Result(
         response_id=response.id,
-        user_id=DEFAULT_USER_ID,
+        user_id=user.id,
         score=scored.parsed.score,
         rubric=[c.model_dump() for c in scored.parsed.criteria],
         corrections=[c.model_dump(mode="json") for c in corrected.parsed.sentences],
