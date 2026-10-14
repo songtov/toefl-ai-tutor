@@ -42,6 +42,7 @@ class StudySession(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id", index=True)
     plan: list[dict[str, Any]] = Field(sa_column=Column(JSON))
     plan_reason: str
+    bank_set_id: int | None = Field(default=None, index=True)
     started_at: datetime = Field(default_factory=_now)
     cost_usd: float = 0.0
 
@@ -54,6 +55,7 @@ class Task(SQLModel, table=True):
     type: str
     difficulty: str
     target_weakness: str | None = None
+    bank_id: str | None = Field(default=None, index=True)
     content: dict[str, Any] = Field(sa_column=Column(JSON))
 
 

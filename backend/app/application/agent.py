@@ -4,8 +4,6 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.task import TaskType
-
 
 @dataclass(frozen=True)
 class Step:
@@ -55,17 +53,3 @@ class AgentLoop:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         return run
-
-
-SET_SIZE = 3
-FIXED_PLAN_REASON = f"Sprint 1 fixed plan: {SET_SIZE} Write an Email tasks at medium difficulty."
-
-
-def fixed_session_plan() -> list[Step]:
-    return [
-        Step(
-            "generate_task",
-            {"task_type": TaskType.EMAIL, "difficulty": "medium", "target_weakness": None},
-        )
-        for _ in range(SET_SIZE)
-    ]

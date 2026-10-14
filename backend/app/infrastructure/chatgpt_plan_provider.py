@@ -35,10 +35,8 @@ class ChatGPTPlanProvider:
         self._access_token = access_token
         self._http_client = http_client
 
-    def complete[T: BaseModel](
-        self, *, system: str, user: str, schema: type[T], temperature: float | None = None
-    ) -> LLMResult[T]:
-        # ChatGPT plan usage rejects `temperature`, so it is ignored.
+    def complete[T: BaseModel](self, *, system: str, user: str, schema: type[T]) -> LLMResult[T]:
+        # ChatGPT plan usage rejects `temperature`, so it is never sent.
         s = self._settings
         client = OpenAI(
             api_key=self._access_token(),

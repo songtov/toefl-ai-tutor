@@ -7,6 +7,7 @@ from pathlib import Path
 from sqlmodel import Session, col, select
 
 from app.config import get_settings
+from app.domain.task import TaskType
 from app.infrastructure.db import Response, Result, Task, make_engine
 
 OUT = Path(__file__).resolve().parents[1] / "evals" / "email_seed.jsonl"
@@ -17,7 +18,11 @@ def main(limit: int) -> None:
     with Session(engine) as db:
         rows = db.exec(
             select(Task, Response, Result)
-            .where(Task.id == Response.task_id, Response.id == Result.response_id)
+            .where(
+                Task.type == TaskType.EMAIL,
+                Task.id == Response.task_id,
+                Response.id == Result.response_id,
+            )
             .order_by(col(Result.id).desc())
             .limit(limit)
         ).all()

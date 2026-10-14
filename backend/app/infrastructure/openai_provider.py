@@ -14,14 +14,9 @@ class OpenAIAPIProvider:
         self._client = OpenAI(api_key=settings.openai_api_key, timeout=settings.llm_timeout_s)
         self._settings = settings
 
-    def complete[T: BaseModel](
-        self, *, system: str, user: str, schema: type[T], temperature: float | None = None
-    ) -> LLMResult[T]:
+    def complete[T: BaseModel](self, *, system: str, user: str, schema: type[T]) -> LLMResult[T]:
         s = self._settings
-        if s.llm_temperature is None:
-            extra = {}
-        else:
-            extra = {"temperature": s.llm_temperature if temperature is None else temperature}
+        extra = {} if s.llm_temperature is None else {"temperature": s.llm_temperature}
         start = time.perf_counter()
         response = self._client.responses.parse(
             model=s.openai_model,

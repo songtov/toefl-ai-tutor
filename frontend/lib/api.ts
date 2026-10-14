@@ -5,17 +5,22 @@ export type Session = {
   cost_usd: number;
 };
 
-export type Task = {
-  id: number;
-  type: string;
-  difficulty: string;
-  content: { situation: string; recipient: string; requirements: string[] };
-  directions: string;
-};
+export type Post = { name: string; post: string };
+
+type TaskBase = { id: number; difficulty: string; directions: string };
+
+export type Task =
+  | (TaskBase & { type: "build_a_sentence"; content: { context: string; template: string; chunks: string[] } })
+  | (TaskBase & {
+      type: "write_an_email";
+      content: { situation: string; recipient: string; requirements: string[] };
+    })
+  | (TaskBase & { type: "academic_discussion"; content: { course: string; professor: Post; students: Post[] } });
 
 export type Answer = {
   result_id: number;
   score: number;
+  max_score: number;
   criteria: { criterion: string; rationale: string }[];
   corrections: {
     original: string;
@@ -23,13 +28,14 @@ export type Answer = {
     reason: string;
     error_types: string[];
   }[];
+  correct_answer: string | null;
   usage: { input_tokens: number; output_tokens: number; cost_usd: number };
 };
 
-export type SessionSummary = {
+export type SetSummary = {
   id: number;
-  started_at: string;
   task_count: number;
+  session_id: number | null;
   answered_count: number;
 };
 
@@ -70,16 +76,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export const startSession = () => request<Session>("/sessions", { method: "POST" });
+export const listSets = () => request<SetSummary[]>("/sets");
 
-export const listSessions = () => request<SessionSummary[]>("/sessions");
+export const openSet = (setId: number) => request<Session>(`/sets/${setId}/session`, { method: "POST" });
 
 export const getSession = (sessionId: number) => request<SessionDetail>(`/sessions/${sessionId}`);
 
-export const submitAnswer = (taskId: number, text: string) =>
+export const submitAnswer = (taskId: number, answer: { text: string } | { chunks: string[] }) =>
   request<Answer>(`/tasks/${taskId}/answer`, {
     method: "POST",
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(answer),
   });
 
 export const getAuthStatus = () => request<AuthStatus>("/auth/status");
