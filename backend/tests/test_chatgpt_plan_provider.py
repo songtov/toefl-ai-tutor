@@ -9,11 +9,6 @@ from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider, PlanRe
 from tests.conftest import CANNED
 
 
-class FakeAuth:
-    def access_token(self) -> str:
-        return "access-token"
-
-
 def _response(status: str, text: str = "", error: dict | None = None) -> dict:
     output = [
         {
@@ -61,7 +56,7 @@ def _provider(handler) -> tuple[ChatGPTPlanProvider, list[httpx.Request]]:
 
     provider = ChatGPTPlanProvider(
         Settings(chatgpt_model="gpt-test"),
-        FakeAuth(),
+        lambda: "access-token",
         http_client=httpx.Client(transport=httpx.MockTransport(record)),
     )
     return provider, seen
@@ -134,4 +129,4 @@ def test_admission_errors_mapped(status, body, expected):
 
 def test_requires_model():
     with pytest.raises(RuntimeError, match="CHATGPT_MODEL"):
-        ChatGPTPlanProvider(Settings(chatgpt_model=""), FakeAuth())
+        ChatGPTPlanProvider(Settings(chatgpt_model=""), lambda: "access-token")

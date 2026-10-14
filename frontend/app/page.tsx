@@ -57,13 +57,13 @@ export default function Home() {
   }
 
   useEffect(() => {
-    listSessions().then(setSessions, (e) => setError(String(e)));
     const result = new URLSearchParams(window.location.search).get("auth");
     if (result) window.history.replaceState(null, "", window.location.pathname);
     getAuthStatus().then(
       (status) => {
         setAuth(status);
         if (result && result !== "ok") setError(`Sign-in failed: ${describeError(result)}`);
+        if (status.signed_in) listSessions().then(setSessions, (e) => setError(String(e)));
       },
       (e) => setError(String(e)),
     );
@@ -80,6 +80,8 @@ export default function Home() {
     run("Signing out…", async () => {
       const { revoked } = await logout();
       setAuth(await getAuthStatus());
+      setSessions([]);
+      setDetail(null);
       if (!revoked) {
         throw new Error(
           "Signed out locally, but OpenAI did not confirm revocation. You can disconnect this app in ChatGPT Settings.",
@@ -145,7 +147,11 @@ export default function Home() {
         busy={busy}
         error={error}
       >
-        <SetList sessions={sessions} onOpen={openSet} disabled={busy !== null} />
+        {auth?.signed_in ? (
+          <SetList sessions={sessions} onOpen={openSet} disabled={busy !== null} />
+        ) : (
+          auth && <p className="p-6 text-sm">Continue with ChatGPT to start practicing.</p>
+        )}
       </Shell>
     );
   }
@@ -301,19 +307,25 @@ function AccountMenu({
   disabled: boolean;
 }) {
   if (auth === null) return null;
-  if (!auth.signed_in || !auth.plan_enabled) {
-    return (
-      <button onClick={onLogin} disabled={disabled} className={BAR_BUTTON}>
-        Continue with ChatGPT
-      </button>
-    );
-  }
+  const continueButton = (
+    <button onClick={onLogin} disabled={disabled} className={BAR_BUTTON}>
+      Continue with ChatGPT
+    </button>
+  );
+  if (!auth.signed_in) return continueButton;
   return (
     <div className="flex items-center gap-3 text-xs text-white/80">
-      <span>
-        Using ChatGPT plan · {auth.email} ·{" "}
-        <ManageUsageLink className="underline hover:text-white" />
-      </span>
+      {auth.plan_enabled ? (
+        <span>
+          Using ChatGPT plan · {auth.email} ·{" "}
+          <ManageUsageLink className="underline hover:text-white" />
+        </span>
+      ) : (
+        <>
+          <span>{auth.email}</span>
+          {continueButton}
+        </>
+      )}
       <button onClick={onLogout} disabled={disabled} className={BAR_BUTTON}>
         Sign out
       </button>

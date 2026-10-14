@@ -1,4 +1,5 @@
 import time
+from collections.abc import Callable
 
 import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 
 from app.application.llm import LLMResult, Usage
 from app.config import Settings
-from app.infrastructure.chatgpt_auth import RESOURCE, ChatGPTAuth
+from app.infrastructure.chatgpt_auth import RESOURCE
 
 USAGE_LIMIT_CODE = "subscription_sharing_usage_limit_exceeded"
 
@@ -23,12 +24,15 @@ class ChatGPTPlanProvider:
     """Responses API on the signed-in user's ChatGPT plan (Sign in with ChatGPT)."""
 
     def __init__(
-        self, settings: Settings, auth: ChatGPTAuth, http_client: httpx.Client | None = None
+        self,
+        settings: Settings,
+        access_token: Callable[[], str],
+        http_client: httpx.Client | None = None,
     ) -> None:
         if not settings.chatgpt_model:
             raise RuntimeError("CHATGPT_MODEL must be set in backend/.env")
         self._settings = settings
-        self._auth = auth
+        self._access_token = access_token
         self._http_client = http_client
 
     def complete[T: BaseModel](
@@ -37,7 +41,7 @@ class ChatGPTPlanProvider:
         # ChatGPT plan usage rejects `temperature`, so it is ignored.
         s = self._settings
         client = OpenAI(
-            api_key=self._auth.access_token(),
+            api_key=self._access_token(),
             base_url=RESOURCE,
             max_retries=0,
             timeout=s.llm_timeout_s,
