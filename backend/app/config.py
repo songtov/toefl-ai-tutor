@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str | None = None
     llm_temperature: float | None = 0.0
-    llm_task_temperature: float = 0.9
     llm_timeout_s: float = 30.0
     price_input_per_mtok: float = 0.0
     price_output_per_mtok: float = 0.0

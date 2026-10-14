@@ -101,7 +101,7 @@ export default function Home() {
     });
 
   const onNewSet = () =>
-    run("Generating a new set…", async () => {
+    run("Starting a new set…", async () => {
       const s = await startSession();
       setDetail(await getSession(s.id));
       setIndex(0);
@@ -382,7 +382,7 @@ function SetList({
   disabled: boolean;
 }) {
   if (sessions.length === 0) {
-    return <p className="p-6 text-sm">No sets yet. Choose “New Set” to generate one.</p>;
+    return <p className="p-6 text-sm">No sets yet. Choose “New Set” to start one.</p>;
   }
   return (
     <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">

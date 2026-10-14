@@ -18,6 +18,7 @@ from app.infrastructure.chatgpt_auth import (
 )
 from app.infrastructure.chatgpt_plan_provider import PlanRequestError
 from app.infrastructure.db import init_db, make_engine
+from app.infrastructure.task_bank import load_email_tasks
 from app.interfaces import auth_api
 from app.interfaces.api import router
 from app.interfaces.security import require_json_for_writes
@@ -50,6 +51,7 @@ def create_app(
             raise RuntimeError("TOKEN_ENCRYPTION_KEY must be set in backend/.env")
         app.state.engine = make_engine(database_url or settings.database_url)
         init_db(app.state.engine)
+        load_email_tasks()
         app.state.fernet = Fernet(key)
         app.state.auth = make_auth(EncryptedCredentialStore(app.state.engine, app.state.fernet))
         yield

@@ -26,3 +26,9 @@ class EmailTask(BaseModel):
             f"Write an email to {self.recipient}. In your email, do the following:\n{items}\n\n"
             "Write 80-120 words in complete sentences."
         )
+
+
+class BankedEmailTask(BaseModel):
+    id: str
+    difficulty: str
+    task: EmailTask

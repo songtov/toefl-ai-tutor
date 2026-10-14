@@ -54,6 +54,7 @@ class Task(SQLModel, table=True):
     type: str
     difficulty: str
     target_weakness: str | None = None
+    bank_id: str | None = Field(default=None, index=True)
     content: dict[str, Any] = Field(sa_column=Column(JSON))
 
 

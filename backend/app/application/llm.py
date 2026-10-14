@@ -21,5 +21,5 @@ class LLMResult[T: BaseModel]:
 
 class LLMProvider(Protocol):
     def complete[T: BaseModel](
-        self, *, system: str, user: str, schema: type[T], temperature: float | None = None
+        self, *, system: str, user: str, schema: type[T]
     ) -> LLMResult[T]: ...

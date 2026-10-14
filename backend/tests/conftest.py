@@ -11,7 +11,6 @@ from sqlmodel import Session
 
 from app.application.llm import LLMResult, Usage
 from app.domain.assessment import Corrections, Score
-from app.domain.task import EmailTask
 from app.infrastructure.chatgpt_auth import ChatGPTAuth, CredentialStore
 from app.infrastructure.db import AuthSession, User
 from app.interfaces.api import get_provider
@@ -21,15 +20,6 @@ from app.main import create_app
 ENCRYPTION_KEY = Fernet.generate_key().decode()
 
 CANNED: dict[type[BaseModel], dict] = {
-    EmailTask: {
-        "situation": "Your study group meeting was moved to a room you cannot find.",
-        "recipient": "Ms. Park, the library coordinator",
-        "requirements": [
-            "Explain the problem",
-            "Ask where the room is",
-            "Suggest how signs could help",
-        ],
-    },
     Score: {
         "score": 3,
         "criteria": [
@@ -54,12 +44,10 @@ CANNED: dict[type[BaseModel], dict] = {
 
 class FakeProvider:
     def __init__(self) -> None:
-        self.calls: list[tuple[type[BaseModel], str, float | None]] = []
+        self.calls: list[tuple[type[BaseModel], str]] = []
 
-    def complete[T: BaseModel](
-        self, *, system: str, user: str, schema: type[T], temperature: float | None = None
-    ) -> LLMResult[T]:
-        self.calls.append((schema, user, temperature))
+    def complete[T: BaseModel](self, *, system: str, user: str, schema: type[T]) -> LLMResult[T]:
+        self.calls.append((schema, user))
         return LLMResult(
             parsed=schema.model_validate(CANNED[schema]),
             model="fake-model",

@@ -7,20 +7,16 @@ from pydantic import BaseModel
 from sqlmodel import col, select
 
 from app.application import tools
-from app.application.agent import (
-    FIXED_PLAN_REASON,
-    AgentLoop,
-    Step,
-    ToolRegistry,
-    fixed_session_plan,
-)
+from app.application.agent import AgentLoop, Step, ToolRegistry
 from app.application.llm import LLMProvider, LLMResult
+from app.application.task_selection import PLAN_REASON, pick_email_tasks
 from app.config import Settings, get_settings
 from app.domain.assessment import Corrections, CriterionRationale, Score, SentenceCorrection
-from app.domain.task import EmailTask
+from app.domain.task import EmailTask, TaskType
 from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
 from app.infrastructure.db import Response, Result, StudySession, Task
 from app.infrastructure.openai_provider import OpenAIAPIProvider
+from app.infrastructure.task_bank import load_email_tasks
 from app.interfaces.deps import Auth, CurrentUser, Db
 
 router = APIRouter()
@@ -42,10 +38,6 @@ def get_agent(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AgentLoop:
     registry = ToolRegistry()
-    registry.register(
-        "generate_task",
-        partial(tools.generate_task, provider, temperature=settings.llm_task_temperature),
-    )
     registry.register("score_response", partial(tools.score_response, provider))
     registry.register("correct_errors", partial(tools.correct_errors, provider))
     return AgentLoop(registry, max_steps=settings.agent_max_steps, timeout_s=settings.llm_timeout_s)
@@ -132,35 +124,30 @@ def _task_out(task: Task) -> TaskOut:
 
 
 @router.post("/sessions", status_code=201)
-def start_session(db: Db, agent: Agent, user: CurrentUser) -> SessionOut:
-    plan = fixed_session_plan()
-    outputs = []
-    for step in plan:
-        run = agent.run([Step(step.tool, {**step.args, "avoid": [o.parsed for o in outputs]})])
-        if run.stopped:
-            raise HTTPException(504, run.stopped)
-        outputs.append(run.outputs[0])
+def start_session(db: Db, user: CurrentUser) -> SessionOut:
+    seen = db.exec(
+        select(Task.bank_id).where(Task.user_id == user.id, col(Task.bank_id).is_not(None))
+    ).all()
+    picked = pick_email_tasks(load_email_tasks(), set(seen))
 
     session = StudySession(
         user_id=user.id,
-        plan=[{"tool": s.tool, "args": s.args} for s in plan],
-        plan_reason=FIXED_PLAN_REASON,
+        plan=[{"bank_id": t.id} for t in picked],
+        plan_reason=PLAN_REASON,
     )
     db.add(session)
     db.flush()
-    tasks = []
-    for step, out in zip(plan, outputs, strict=True):
-        tasks.append(
-            Task(
-                session_id=session.id,
-                user_id=user.id,
-                type=step.args["task_type"],
-                difficulty=step.args["difficulty"],
-                target_weakness=step.args["target_weakness"],
-                content=out.parsed.model_dump(),
-            )
+    tasks = [
+        Task(
+            session_id=session.id,
+            user_id=user.id,
+            type=TaskType.EMAIL,
+            difficulty=t.difficulty,
+            bank_id=t.id,
+            content=t.task.model_dump(),
         )
-        session.cost_usd += out.usage.cost_usd
+        for t in picked
+    ]
     db.add_all(tasks)
     db.commit()
     return SessionOut(

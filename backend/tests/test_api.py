@@ -5,11 +5,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
-from app.config import Settings, get_settings
-from app.domain.task import EmailTask
+from app.config import Settings
 from app.infrastructure.chatgpt_auth import ChatGPTAuth
 from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
-from app.infrastructure.db import User
+from app.infrastructure.db import StudySession, Task, User
+from app.infrastructure.task_bank import load_email_tasks
 from app.interfaces.api import get_provider
 from app.main import create_app
 from tests.conftest import ENCRYPTION_KEY, sign_in_as
@@ -25,7 +25,7 @@ def test_demo_scenario(client, provider):
 
     task = client.get(f"/sessions/{session['id']}/next").json()
     assert task["type"] == "write_an_email"
-    assert "Ms. Park" in task["directions"]
+    assert task["content"] in [t.task.model_dump() for t in load_email_tasks()]
     assert len(task["content"]["requirements"]) == 3
 
     answered = client.post(f"/tasks/{task['id']}/answer", json={"text": "I go there yesterday."})
@@ -73,13 +73,25 @@ def test_answer_twice_rejected(client):
     assert client.post(f"/tasks/{task_id}/answer", json={"text": "Hi."}).status_code == 409
 
 
-def test_set_tasks_avoid_earlier_ones(client, provider):
+def test_sessions_use_unseen_bank_tasks_without_llm(client, provider):
+    bank_size = len(load_email_tasks())
+    sessions = [client.post("/sessions").json() for _ in range(bank_size // 3)]
+    assert provider.calls == []
+
+    with Session(client.app.state.engine) as db:
+        bank_ids = db.exec(select(Task.bank_id)).all()
+    assert len(bank_ids) == len(set(bank_ids)) == 3 * len(sessions)
+    assert {p["bank_id"] for s in sessions for p in _plan(client, s["id"])} == set(bank_ids)
+
+    # Once every task has been seen, sessions repeat earlier ones instead of failing.
     client.post("/sessions")
-    generated = [(user, temp) for schema, user, temp in provider.calls if schema is EmailTask]
-    assert len(generated) == 3
-    assert "Ms. Park" not in generated[0][0]
-    assert all("Ms. Park" in user for user, _ in generated[1:])
-    assert {temp for _, temp in generated} == {get_settings().llm_task_temperature}
+    with Session(client.app.state.engine) as db:
+        assert set(db.exec(select(Task.bank_id)).all()) == {t.id for t in load_email_tasks()}
+
+
+def _plan(client, session_id: int) -> list[dict]:
+    with Session(client.app.state.engine) as db:
+        return db.get(StudySession, session_id).plan
 
 
 def test_unknown_session_and_task(client):
@@ -135,7 +147,8 @@ def test_signed_out_provider_returns_401(client):
     auth = client.app.state.auth
     provider = ChatGPTPlanProvider(Settings(chatgpt_model="gpt-test"), lambda: auth.access_token(1))
     client.app.dependency_overrides[get_provider] = lambda: provider
-    response = client.post("/sessions")
+    task_id = client.post("/sessions").json()["task_ids"][0]
+    response = client.post(f"/tasks/{task_id}/answer", json={"text": "Hi."})
     assert response.status_code == 401
     assert response.json() == {"detail": "sign_in_required"}
 

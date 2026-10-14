@@ -1,13 +1,14 @@
 # toefl-ai-tutor
 
-AI-powered TOEFL Writing practice with generated prompts, rubric-based feedback, and sentence-level corrections.
-The current MVP generates sets of three **Write an Email** tasks and saves answers and feedback for review.
+AI-powered TOEFL Writing practice with prebuilt tasks, rubric-based feedback, and sentence-level corrections.
+The current MVP serves sets of three **Write an Email** tasks from a task bank and saves answers and feedback for review.
 
 ## Layout
 
 ```
 backend/            FastAPI + SQLModel, DDD layers
   app/domain/          task, assessment schemas, rubric
+  app/content/         task bank (JSONL): Email, Build a Sentence, Academic Discussion
   app/application/     LLMProvider port, tools, agent loop
   app/infrastructure/  Sign in with ChatGPT, ChatGPT plan and OpenAI API providers, database tables
   app/interfaces/      HTTP API
@@ -32,7 +33,7 @@ Open http://127.0.0.1:3000 (not `localhost`, so the sign-in cookies match the ca
 Signing in creates your account: the app keeps your ChatGPT account ID and email, and your sets are visible only to you.
 OpenAI redirects back to `http://127.0.0.1:1455/auth/callback`, which Docker forwards to the backend container, so the sign-in must happen in a browser on the same machine.
 The database and credentials live in the `tutor-data` volume and survive restarts; `docker compose down -v` deletes them.
-Databases created before accounts were added are not migrated: run `docker compose down -v` (or delete `tutor.db`) once.
+Databases created before accounts or the task bank were added are not migrated: run `docker compose down -v` (or delete `tutor.db`) once.
 
 `docker-compose.yml` is the development setup: `backend/app` and `frontend` are mounted into the containers, uvicorn runs with `--reload`, and the frontend runs `next dev`, so edits apply without rebuilding.
 After changing dependencies (`pyproject.toml`, `package.json`), run `docker compose up -d --build -V` to rebuild and refresh `node_modules`.

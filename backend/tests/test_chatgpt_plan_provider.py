@@ -83,7 +83,7 @@ def test_streams_structured_output_without_storing():
     provider, seen = _provider(
         lambda r: httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
     )
-    result = provider.complete(system="rate", user="essay", schema=Score, temperature=0.9)
+    result = provider.complete(system="rate", user="essay", schema=Score)
 
     assert result.parsed.score == 3
     assert (result.usage.input_tokens, result.usage.output_tokens) == (12, 34)
