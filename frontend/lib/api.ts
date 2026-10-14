@@ -26,10 +26,10 @@ export type Answer = {
   usage: { input_tokens: number; output_tokens: number; cost_usd: number };
 };
 
-export type SessionSummary = {
+export type SetSummary = {
   id: number;
-  started_at: string;
   task_count: number;
+  session_id: number | null;
   answered_count: number;
 };
 
@@ -70,9 +70,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export const startSession = () => request<Session>("/sessions", { method: "POST" });
+export const listSets = () => request<SetSummary[]>("/sets");
 
-export const listSessions = () => request<SessionSummary[]>("/sessions");
+export const openSet = (setId: number) => request<Session>(`/sets/${setId}/session`, { method: "POST" });
 
 export const getSession = (sessionId: number) => request<SessionDetail>(`/sessions/${sessionId}`);
 

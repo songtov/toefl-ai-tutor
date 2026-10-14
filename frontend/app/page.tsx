@@ -6,16 +6,16 @@ import {
   type AuthStatus,
   MANAGE_USAGE_URL,
   type SessionDetail,
-  type SessionSummary,
+  type SetSummary,
   type TaskDetail,
   USAGE_LIMIT_MESSAGE,
   describeError,
   getAuthStatus,
   getSession,
-  listSessions,
+  listSets,
   login,
   logout,
-  startSession,
+  openSet,
   submitAnswer,
 } from "@/lib/api";
 
@@ -33,10 +33,9 @@ const AUTHORIZE_ORIGIN = "https://auth.openai.com";
 
 const countWords = (text: string) => (text.trim() ? text.trim().split(/\s+/).length : 0);
 
-const parseUtc = (iso: string) => new Date(/Z|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
-
 export default function Home() {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sets, setSets] = useState<SetSummary[]>([]);
+  const [setId, setSetId] = useState<number | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [index, setIndex] = useState(0);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
@@ -63,7 +62,7 @@ export default function Home() {
       (status) => {
         setAuth(status);
         if (result && result !== "ok") setError(`Sign-in failed: ${describeError(result)}`);
-        if (status.signed_in) listSessions().then(setSessions, (e) => setError(String(e)));
+        if (status.signed_in) listSets().then(setSets, (e) => setError(String(e)));
       },
       (e) => setError(String(e)),
     );
@@ -80,7 +79,7 @@ export default function Home() {
     run("Signing out…", async () => {
       const { revoked } = await logout();
       setAuth(await getAuthStatus());
-      setSessions([]);
+      setSets([]);
       setDetail(null);
       if (!revoked) {
         throw new Error(
@@ -94,23 +93,18 @@ export default function Home() {
     <AccountMenu auth={auth} onLogin={onLogin} onLogout={onLogout} disabled={busy !== null} />
   );
 
-  const openSet = (id: number) =>
+  const onOpenSet = (id: number) =>
     run("Loading…", async () => {
-      setDetail(await getSession(id));
-      setIndex(0);
-    });
-
-  const onNewSet = () =>
-    run("Starting a new set…", async () => {
-      const s = await startSession();
-      setDetail(await getSession(s.id));
+      const session = await openSet(id);
+      setDetail(await getSession(session.id));
+      setSetId(id);
       setIndex(0);
     });
 
   const onExit = () =>
     run("Loading…", async () => {
       setDetail(null);
-      setSessions(await listSessions());
+      setSets(await listSets());
     });
 
   const pending = detail?.tasks.filter((t) => t.answer_text === null) ?? [];
@@ -133,25 +127,13 @@ export default function Home() {
     return (
       <Shell
         title="Writing Practice"
-        actions={
-          <>
-            {account}
-            <button
-              onClick={onNewSet}
-              disabled={busy !== null || !ready}
-              title={ready ? undefined : "Sign in with ChatGPT first"}
-              className={BAR_BUTTON}
-            >
-              New Set
-            </button>
-          </>
-        }
+        actions={account}
         subLeft="Writing | Sets"
-        subRight={`${sessions.length} set(s)`}
+        subRight={`${sets.length} set(s)`}
         busy={busy}
         error={error}
       >
-        {auth && <SetList sessions={sessions} onOpen={openSet} disabled={busy !== null} />}
+        {auth && <SetList sets={sets} onOpen={onOpenSet} disabled={busy !== null} />}
       </Shell>
     );
   }
@@ -163,7 +145,7 @@ export default function Home() {
 
   return (
     <Shell
-      title={`Set ${detail.id}`}
+      title={`Set ${setId}`}
       actions={
         <>
           {account}
@@ -373,33 +355,28 @@ function AccountMenu({
 }
 
 function SetList({
-  sessions,
+  sets,
   onOpen,
   disabled,
 }: {
-  sessions: SessionSummary[];
+  sets: SetSummary[];
   onOpen: (id: number) => void;
   disabled: boolean;
 }) {
-  if (sessions.length === 0) {
-    return <p className="p-6 text-sm">No sets yet. Choose “New Set” to start one.</p>;
-  }
   return (
     <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
       <table className="w-full border border-exam-line text-sm">
         <thead className="bg-exam-subbar text-left">
           <tr>
             <th className="px-3 py-2">Set</th>
-            <th className="px-3 py-2">Created</th>
             <th className="px-3 py-2">Status</th>
             <th className="px-3 py-2" />
           </tr>
         </thead>
         <tbody>
-          {sessions.map((s) => (
+          {sets.map((s) => (
             <tr key={s.id} className="border-t border-exam-line">
               <td className="px-3 py-2 font-semibold">Set {s.id}</td>
-              <td className="px-3 py-2">{parseUtc(s.started_at).toLocaleString()}</td>
               <td className="px-3 py-2">
                 {s.answered_count === s.task_count
                   ? "Scored"

@@ -1,14 +1,14 @@
 # toefl-ai-tutor
 
 AI-powered TOEFL Writing practice with prebuilt tasks, rubric-based feedback, and sentence-level corrections.
-The current MVP serves sets of three **Write an Email** tasks from a task bank and saves answers and feedback for review.
+The current MVP shows fixed sets of three **Write an Email** tasks from a task bank and saves answers and feedback for review.
 
 ## Layout
 
 ```
 backend/            FastAPI + SQLModel, DDD layers
   app/domain/          task, assessment schemas, rubric
-  app/content/         task bank (JSONL): Email, Build a Sentence, Academic Discussion
+  app/content/         task bank (JSONL): Email tasks and sets, Build a Sentence, Academic Discussion
   app/application/     LLMProvider port, tools, agent loop
   app/infrastructure/  Sign in with ChatGPT, ChatGPT plan and OpenAI API providers, database tables
   app/interfaces/      HTTP API
@@ -59,7 +59,8 @@ API_URL=http://127.0.0.1:1455 npm run dev   # http://127.0.0.1:3000
 API only (write requests must send `content-type: application/json`):
 
 ```sh
-curl -X POST 127.0.0.1:1455/sessions -H 'content-type: application/json'
+curl 127.0.0.1:1455/sets
+curl -X POST 127.0.0.1:1455/sets/1/session -H 'content-type: application/json'
 curl 127.0.0.1:1455/sessions/1/next
 curl -X POST 127.0.0.1:1455/tasks/1/answer -H 'content-type: application/json' \
   -d '{"text": "Dear Ms. Park, ..."}'

@@ -32,3 +32,8 @@ class BankedEmailTask(BaseModel):
     id: str
     difficulty: str
     task: EmailTask
+
+
+class EmailSet(BaseModel):
+    id: int
+    task_ids: list[str]

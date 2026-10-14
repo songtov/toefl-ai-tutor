@@ -9,14 +9,13 @@ from sqlmodel import col, select
 from app.application import tools
 from app.application.agent import AgentLoop, Step, ToolRegistry
 from app.application.llm import LLMProvider, LLMResult
-from app.application.task_selection import PLAN_REASON, pick_email_tasks
 from app.config import Settings, get_settings
 from app.domain.assessment import Corrections, CriterionRationale, Score, SentenceCorrection
 from app.domain.task import EmailTask, TaskType
 from app.infrastructure.chatgpt_plan_provider import ChatGPTPlanProvider
 from app.infrastructure.db import Response, Result, StudySession, Task
 from app.infrastructure.openai_provider import OpenAIAPIProvider
-from app.infrastructure.task_bank import load_email_tasks
+from app.infrastructure.task_bank import load_email_sets, load_email_tasks
 from app.interfaces.deps import Auth, CurrentUser, Db
 
 router = APIRouter()
@@ -61,10 +60,10 @@ class SessionOut(BaseModel):
     cost_usd: float
 
 
-class SessionSummaryOut(BaseModel):
+class SetOut(BaseModel):
     id: int
-    started_at: datetime
     task_count: int
+    session_id: int | None
     answered_count: int
 
 
@@ -123,63 +122,81 @@ def _task_out(task: Task) -> TaskOut:
     )
 
 
-@router.post("/sessions", status_code=201)
-def start_session(db: Db, user: CurrentUser) -> SessionOut:
-    seen = db.exec(
-        select(Task.bank_id).where(Task.user_id == user.id, col(Task.bank_id).is_not(None))
-    ).all()
-    picked = pick_email_tasks(load_email_tasks(), set(seen))
-
-    session = StudySession(
-        user_id=user.id,
-        plan=[{"bank_id": t.id} for t in picked],
-        plan_reason=PLAN_REASON,
-    )
-    db.add(session)
-    db.flush()
-    tasks = [
-        Task(
-            session_id=session.id,
-            user_id=user.id,
-            type=TaskType.EMAIL,
-            difficulty=t.difficulty,
-            bank_id=t.id,
-            content=t.task.model_dump(),
-        )
-        for t in picked
-    ]
-    db.add_all(tasks)
-    db.commit()
-    return SessionOut(
-        id=session.id,
-        plan_reason=session.plan_reason,
-        task_ids=[t.id for t in tasks],
-        cost_usd=session.cost_usd,
-    )
-
-
-@router.get("/sessions")
-def list_sessions(db: Db, user: CurrentUser) -> list[SessionSummaryOut]:
-    sessions = db.exec(
-        select(StudySession)
-        .where(StudySession.user_id == user.id)
-        .order_by(col(StudySession.id).desc())
-    ).all()
-    out = []
-    for session in sessions:
-        task_ids = db.exec(select(Task.id).where(Task.session_id == session.id)).all()
-        answered = db.exec(
+def _answered_count(db: Db, session_id: int) -> int:
+    task_ids = select(Task.id).where(Task.session_id == session_id)
+    return len(
+        db.exec(
             select(Response.task_id).where(col(Response.task_id).in_(task_ids)).distinct()
         ).all()
+    )
+
+
+@router.get("/sets")
+def list_sets(db: Db, user: CurrentUser) -> list[SetOut]:
+    sessions = {
+        s.bank_set_id: s
+        for s in db.exec(
+            select(StudySession).where(
+                StudySession.user_id == user.id, col(StudySession.bank_set_id).is_not(None)
+            )
+        ).all()
+    }
+    out = []
+    for email_set in load_email_sets().values():
+        session = sessions.get(email_set.id)
         out.append(
-            SessionSummaryOut(
-                id=session.id,
-                started_at=session.started_at,
-                task_count=len(task_ids),
-                answered_count=len(answered),
+            SetOut(
+                id=email_set.id,
+                task_count=len(email_set.task_ids),
+                session_id=session.id if session else None,
+                answered_count=_answered_count(db, session.id) if session else 0,
             )
         )
     return out
+
+
+@router.post("/sets/{set_id}/session")
+def open_set(set_id: int, db: Db, user: CurrentUser) -> SessionOut:
+    """Returns the user's session for a set, creating it the first time the set is opened."""
+    email_set = load_email_sets().get(set_id)
+    if email_set is None:
+        raise HTTPException(404, "set not found")
+    session = db.exec(
+        select(StudySession).where(
+            StudySession.user_id == user.id, StudySession.bank_set_id == set_id
+        )
+    ).first()
+    if session is None:
+        bank = load_email_tasks()
+        session = StudySession(
+            user_id=user.id,
+            plan=[{"bank_id": i} for i in email_set.task_ids],
+            plan_reason=f"Set {set_id}: fixed Write an Email tasks from the task bank.",
+            bank_set_id=set_id,
+        )
+        db.add(session)
+        db.flush()
+        db.add_all(
+            Task(
+                session_id=session.id,
+                user_id=user.id,
+                type=TaskType.EMAIL,
+                difficulty=bank[i].difficulty,
+                bank_id=i,
+                content=bank[i].task.model_dump(),
+            )
+            for i in email_set.task_ids
+        )
+        db.commit()
+    task_ids = db.exec(
+        select(Task.id).where(Task.session_id == session.id).order_by(col(Task.id))
+    ).all()
+    return SessionOut(
+        id=session.id,
+        plan_reason=session.plan_reason,
+        task_ids=list(task_ids),
+        cost_usd=session.cost_usd,
+    )
 
 
 @router.get("/sessions/{session_id}")
